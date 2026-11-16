@@ -3,10 +3,20 @@
 #include "prx/libc/include/ApplicationHeap.hpp"
 #include "prx/libc/include/general/VabiMacros.hpp"
 
+#include <cerrno>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <source_location>
+#include <stdexcept>
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
 
 namespace {
 
@@ -77,6 +87,88 @@ int APS5_VABI Destroy(LibreSsl::Bio*) {
     return 1;
 }
 
+class ReadOnlyPage {
+public:
+    ReadOnlyPage() {
+#ifdef _WIN32
+        SYSTEM_INFO info{};
+        GetSystemInfo(&info);
+        bytes = info.dwPageSize;
+        data = VirtualAlloc(nullptr, bytes, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+        Require(data != nullptr);
+#else
+        const long page = sysconf(_SC_PAGESIZE);
+        Require(page > 0);
+        bytes = static_cast<std::size_t>(page);
+        data = mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        Require(data != nullptr && data != MAP_FAILED);
+#endif
+    }
+
+    ~ReadOnlyPage() {
+#ifdef _WIN32
+        VirtualFree(data, 0, MEM_RELEASE);
+#else
+        munmap(data, bytes);
+#endif
+    }
+
+    LibreSsl::BioMethod* Set(const LibreSsl::BioMethod& value) {
+        Require(sizeof(value) <= bytes);
+        std::memcpy(data, &value, sizeof(value));
+        return static_cast<LibreSsl::BioMethod*>(data);
+    }
+
+    void Protect() {
+#ifdef _WIN32
+        DWORD previous{};
+        Require(VirtualProtect(data, bytes, PAGE_READONLY, &previous) != 0);
+#else
+        Require(mprotect(data, bytes, PROT_READ) == 0);
+#endif
+    }
+
+private:
+    void* data = nullptr;
+    std::size_t bytes = 0;
+};
+
+template <typename TCall>
+void Rejects(TCall call, std::source_location location = std::source_location::current()) {
+    errno = EINVAL;
+    bool threw = false;
+    try { call(); } catch (const std::runtime_error&) { threw = true; }
+    Require(threw && errno == EINVAL, location);
+}
+
+void GuestPointers() {
+    auto* unmapped = reinterpret_cast<LibreSsl::BioMethod*>(0x10);
+    Rejects([&] { BIO_meth_set_write_nid_postfix(unmapped, &Write); });
+    Rejects([&] { BIO_meth_set_read_nid_postfix(unmapped, &Read); });
+    Rejects([&] { BIO_meth_set_ctrl_nid_postfix(unmapped, &Control); });
+    Rejects([&] { BIO_meth_set_create_nid_postfix(unmapped, &Create); });
+    Rejects([&] { BIO_meth_set_destroy_nid_postfix(unmapped, &Destroy); });
+
+    LibreSsl::BioMethod initial{};
+    initial.type = 8;
+    initial.name = Name;
+    ReadOnlyPage page;
+    LibreSsl::BioMethod* readOnly = page.Set(initial);
+    page.Protect();
+    Rejects([&] { BIO_meth_set_write_nid_postfix(readOnly, &Write); });
+    Rejects([&] { BIO_meth_set_read_nid_postfix(readOnly, &Read); });
+    Rejects([&] { BIO_meth_set_ctrl_nid_postfix(readOnly, &Control); });
+    Rejects([&] { BIO_meth_set_create_nid_postfix(readOnly, &Create); });
+    Rejects([&] { BIO_meth_set_destroy_nid_postfix(readOnly, &Destroy); });
+    Require(std::memcmp(readOnly, &initial, sizeof(initial)) == 0);
+
+    auto* method = BIO_meth_new_nid_postfix(9, Name);
+    errno = EINVAL;
+    Require(BIO_meth_set_write_nid_postfix(method, &Write) == 1 && method->write == &Write && errno == EINVAL);
+    Require(method->type == 9 && method->name == Name && !method->read && !method->control && !method->create && !method->destroy);
+    BIO_meth_free_nid_postfix(method);
+}
+
 }
 
 int main() {
@@ -141,4 +233,6 @@ int main() {
         BIO_meth_free_nid_postfix(method);
         Require(liveBlocks == 0);
     }
+    GuestPointers();
+    Require(liveBlocks == 0);
 }

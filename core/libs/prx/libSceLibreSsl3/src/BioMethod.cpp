@@ -1,7 +1,23 @@
 #include "prx/libSceLibreSsl3/libSceLibreSsl3.hpp"
 #include "prx/libc/include/Api.hpp"
+#include "prx/libc/include/General.hpp"
 
+#include <cerrno>
+#include <cstddef>
 #include <stdexcept>
+
+namespace {
+
+template <typename T>
+int SetCallback(LibreSsl::BioMethod* method, std::size_t offset, T callback, const char* function) {
+    const int saved = errno;
+    const bool ok = GuestCopyOut_nid_no_patch(reinterpret_cast<unsigned char*>(method) + offset, &callback, sizeof(callback));
+    errno = saved;
+    if (!ok) NotImplementedAt_nid_no_patch(function, __FILE__, __LINE__);
+    return 1;
+}
+
+}
 
 extern "C" {
 
@@ -19,32 +35,27 @@ void APS5_VABI BIO_meth_free_nid_postfix(LibreSsl::BioMethod* method) {
 
 int APS5_VABI BIO_meth_set_write_nid_postfix(LibreSsl::BioMethod* method, decltype(LibreSsl::BioMethod::write) write) {
     if (!method) throw std::invalid_argument("BIO_meth_set_write requires a method");
-    method->write = write;
-    return 1;
+    return SetCallback(method, offsetof(LibreSsl::BioMethod, write), write, __func__);
 }
 
 int APS5_VABI BIO_meth_set_read_nid_postfix(LibreSsl::BioMethod* method, decltype(LibreSsl::BioMethod::read) read) {
     if (!method) throw std::invalid_argument("BIO_meth_set_read requires a method");
-    method->read = read;
-    return 1;
+    return SetCallback(method, offsetof(LibreSsl::BioMethod, read), read, __func__);
 }
 
 int APS5_VABI BIO_meth_set_ctrl_nid_postfix(LibreSsl::BioMethod* method, decltype(LibreSsl::BioMethod::control) ctrl) {
     if (!method) throw std::invalid_argument("BIO_meth_set_ctrl requires a method");
-    method->control = ctrl;
-    return 1;
+    return SetCallback(method, offsetof(LibreSsl::BioMethod, control), ctrl, __func__);
 }
 
 int APS5_VABI BIO_meth_set_create_nid_postfix(LibreSsl::BioMethod* method, decltype(LibreSsl::BioMethod::create) create) {
     if (!method) throw std::invalid_argument("BIO_meth_set_create requires a method");
-    method->create = create;
-    return 1;
+    return SetCallback(method, offsetof(LibreSsl::BioMethod, create), create, __func__);
 }
 
 int APS5_VABI BIO_meth_set_destroy_nid_postfix(LibreSsl::BioMethod* method, decltype(LibreSsl::BioMethod::destroy) destroy) {
     if (!method) throw std::invalid_argument("BIO_meth_set_destroy requires a method");
-    method->destroy = destroy;
-    return 1;
+    return SetCallback(method, offsetof(LibreSsl::BioMethod, destroy), destroy, __func__);
 }
 
 }
