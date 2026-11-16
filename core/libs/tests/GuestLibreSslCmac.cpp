@@ -4,6 +4,7 @@
 #include "prx/libc/include/ApplicationHeap.hpp"
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -21,6 +22,8 @@
 #include <windows.h>
 #else
 #include <dlfcn.h>
+#include <sys/mman.h>
+#include <unistd.h>
 #endif
 
 #ifdef ANYPS5_CMAC_DYNAMIC
@@ -389,6 +392,117 @@ int APS5_VABI GuestControl(LibreSslCipherContext* context, int command, int argu
     return -1;
 }
 
+class GuardedPage {
+public:
+    GuardedPage() {
+#ifdef _WIN32
+        SYSTEM_INFO info{};
+        GetSystemInfo(&info);
+        bytes = info.dwPageSize;
+        data = static_cast<unsigned char*>(VirtualAlloc(nullptr, bytes * 2, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
+        Require(data != nullptr, "guarded page allocation");
+        DWORD previous{};
+        Require(VirtualProtect(data + bytes, bytes, PAGE_NOACCESS, &previous) != 0, "guard page protection");
+#else
+        bytes = static_cast<std::size_t>(sysconf(_SC_PAGESIZE));
+        void* mapped = mmap(nullptr, bytes * 2, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        Require(mapped != MAP_FAILED, "guarded page mapping");
+        data = static_cast<unsigned char*>(mapped);
+        Require(mprotect(data + bytes, bytes, PROT_NONE) == 0, "guard page protection");
+#endif
+    }
+
+    ~GuardedPage() {
+#ifdef _WIN32
+        VirtualFree(data, 0, MEM_RELEASE);
+#else
+        munmap(data, bytes * 2);
+#endif
+    }
+
+    unsigned char* Tail(const void* value, std::size_t size) {
+        std::memcpy(data + bytes - size, value, size);
+        return data + bytes - size;
+    }
+
+    void ReadOnly() {
+#ifdef _WIN32
+        DWORD previous{};
+        Require(VirtualProtect(data, bytes, PAGE_READONLY, &previous) != 0, "read-only page protection");
+#else
+        Require(mprotect(data, bytes, PROT_READ) == 0, "read-only page protection");
+#endif
+    }
+
+private:
+    unsigned char* data = nullptr;
+    std::size_t bytes = 0;
+};
+
+template<typename TAction> void Rejects(TAction action, const char* message) {
+    errno = 71;
+    bool rejected = false;
+    try {
+        action();
+    } catch (const std::exception&) {
+        rejected = errno == 71;
+    }
+    Require(rejected, message);
+}
+
+void GuestPointers() {
+    const auto key = Hex("2b7e151628aed2a6abf7158809cf4f3c");
+    const auto message = Hex("6bc1bee22e409f96e93d7e117393172a");
+    const auto expected = Hex("070a16b46b4d4144f79bdd9dd04a287c");
+    auto* unmapped = reinterpret_cast<unsigned char*>(0x10);
+    auto context = NewContext();
+    Require(CMAC_Init_nid_postfix(context.get(), key.data(), key.size(), Methods[0], nullptr) == 1, "guest pointer key initialization");
+    Rejects([&] { CMAC_Update_nid_postfix(context.get(), unmapped, 16); }, "unmapped update input");
+    std::size_t length = 99;
+    Rejects([&] { CMAC_Final_nid_postfix(context.get(), nullptr, reinterpret_cast<std::size_t*>(0x10)); }, "unmapped final length");
+    {
+        GuardedPage page;
+        auto* tail = page.Tail(message.data(), 5);
+        Require(CMAC_Update_nid_postfix(context.get(), tail, 5) == 1, "update input ending at a page boundary");
+        Rejects([&] { CMAC_Update_nid_postfix(context.get(), page.Tail(message.data() + 5, 5), 6); }, "update input running into an unmapped page");
+        Require(CMAC_Update_nid_postfix(context.get(), page.Tail(message.data() + 5, 11), 11) == 1, "update after a rejected input");
+    }
+    Rejects([&] { CMAC_Final_nid_postfix(context.get(), unmapped, &length); }, "unmapped final output");
+    Require(CMAC_Init_nid_postfix(context.get(), nullptr, 0, nullptr, nullptr) == 1, "restart after rejected final");
+    Require(CMAC_Update_nid_postfix(context.get(), message.data(), message.size()) == 1, "restarted update");
+    {
+        GuardedPage page;
+        std::array<unsigned char, 16> sentinel;
+        sentinel.fill(0xa5);
+        Rejects([&] { CMAC_Final_nid_postfix(context.get(), page.Tail(sentinel.data(), 15), &length); }, "final output running into an unmapped page");
+        auto* output = page.Tail(sentinel.data(), sentinel.size());
+        page.ReadOnly();
+        Rejects([&] { CMAC_Final_nid_postfix(context.get(), output, &length); }, "read-only final output");
+        Require(std::all_of(output, output + sentinel.size(), [](auto value) { return value == 0xa5; }), "rejected final leaves a read-only output alone");
+    }
+    Require(CMAC_Init_nid_postfix(context.get(), nullptr, 0, nullptr, nullptr) == 1, "restart before checked tag");
+    {
+        GuardedPage page;
+        Require(CMAC_Update_nid_postfix(context.get(), page.Tail(message.data(), message.size()), message.size()) == 1, "message ending at a page boundary");
+    }
+    const auto tag = Final(context.get());
+    Require(std::equal(tag.begin(), tag.end(), expected.begin()), "tag after rejected guest pointers");
+
+    const auto* method = Methods[0];
+    std::vector<unsigned char> storage(method->contextSize);
+    LibreSslCipherContext cipher{};
+    cipher.cipher = method;
+    cipher.cipherData = storage.data();
+    cipher.keyLength = method->keyLength;
+    cipher.encrypt = 1;
+    Rejects([&] { method->init(&cipher, unmapped, nullptr, 1); }, "unmapped descriptor key");
+    Require(method->init(&cipher, key.data(), nullptr, 1) == 1, "descriptor key setup");
+    std::array<unsigned char, 32> output{};
+    Rejects([&] { method->cipher(&cipher, output.data(), unmapped, 17); }, "unmapped descriptor input");
+    Rejects([&] { method->cipher(&cipher, unmapped, message.data(), 16); }, "unmapped descriptor output");
+    Require(std::all_of(output.begin(), output.end(), [](auto value) { return value == 0; }), "rejected descriptor call leaves the output alone");
+}
+
 void Callbacks() {
     delegated = Methods[0];
     auto method = *delegated;
@@ -439,6 +553,7 @@ int main(int argc, char** argv) {
     AllocationFailures();
     CipherCallbacks();
     GuestDes();
+    GuestPointers();
     Require(allocations.empty(), "all guest allocations released");
     std::puts("CMAC vectors, streaming, lifecycle and callback checks passed");
 }

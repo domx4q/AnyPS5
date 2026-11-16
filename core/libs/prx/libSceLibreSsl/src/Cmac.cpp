@@ -5,8 +5,10 @@
 #include "prx/libc/include/General.hpp"
 #include <algorithm>
 #include <bit>
+#include <cerrno>
 #include <cstring>
 #include <stdexcept>
+#include <vector>
 #include <mbedtls/aes.h>
 
 struct LibreSslCmac {
@@ -25,6 +27,20 @@ namespace {
 void Cleanse(void* data, std::size_t length) {
     auto* bytes = static_cast<volatile unsigned char*>(data);
     while (length-- != 0) *bytes++ = 0;
+}
+
+void CopyGuestInPreservingErrno(void* hostValue, const void* guestAddress, std::size_t bytes, const char* caller) {
+    const int savedErrno = errno;
+    const bool ok = GuestCopyIn_nid_no_patch(hostValue, guestAddress, bytes);
+    errno = savedErrno;
+    if (!ok) NotImplementedAt_nid_no_patch(caller, __FILE__, __LINE__);
+}
+
+void CopyGuestOutPreservingErrno(void* guestAddress, const void* hostValue, std::size_t bytes, const char* caller) {
+    const int savedErrno = errno;
+    const bool ok = GuestCopyOut_nid_no_patch(guestAddress, hostValue, bytes);
+    errno = savedErrno;
+    if (!ok) NotImplementedAt_nid_no_patch(caller, __FILE__, __LINE__);
 }
 
 int Error(int reason) {
@@ -133,11 +149,37 @@ void DoubleBlock(unsigned char* output, const unsigned char* input, int length) 
 int APS5_VABI AesInit(LibreSslCipherContext* context, const unsigned char* key, const unsigned char*, int encrypt) {
     if (key == nullptr || context->cipherData == nullptr) throw std::invalid_argument("CMAC AES: missing key storage");
     if (context->keyLength != 16 && context->keyLength != 24 && context->keyLength != 32) return Error(143);
+    unsigned char keyBytes[32];
+    CopyGuestInPreservingErrno(keyBytes, key, static_cast<std::size_t>(context->keyLength), __func__);
     auto* aes = static_cast<mbedtls_aes_context*>(context->cipherData);
     mbedtls_aes_init(aes);
-    const int result = encrypt ? mbedtls_aes_setkey_enc(aes, key, context->keyLength * 8) : mbedtls_aes_setkey_dec(aes, key, context->keyLength * 8);
+    const int result = encrypt ? mbedtls_aes_setkey_enc(aes, keyBytes, context->keyLength * 8) : mbedtls_aes_setkey_dec(aes, keyBytes, context->keyLength * 8);
+    Cleanse(keyBytes, sizeof(keyBytes));
     if (result != 0) throw std::runtime_error("CMAC AES: backend key setup failed");
     return 1;
+}
+
+void CipherBlocks(LibreSslCipherContext& context, mbedtls_aes_context* aes, int mode, unsigned char* output, const unsigned char* input, std::size_t complete, std::size_t remaining) {
+    if (complete != 0 && mbedtls_aes_crypt_cbc(aes, mode, complete, context.iv, input, output) != 0)
+        throw std::runtime_error("CMAC AES: backend encryption failed");
+    if (remaining == 0) return;
+    input += complete;
+    output += complete;
+    unsigned char block[16];
+    unsigned char nextIv[16];
+    if (context.encrypt) {
+        std::memcpy(block, context.iv, 16);
+        for (std::size_t index = 0; index < remaining; ++index) block[index] ^= input[index];
+        if (mbedtls_aes_crypt_ecb(aes, mode, block, output) != 0) throw std::runtime_error("CMAC AES: backend encryption failed");
+        std::memcpy(context.iv, output, 16);
+    } else {
+        std::memcpy(nextIv, input, 16);
+        if (mbedtls_aes_crypt_ecb(aes, mode, input, block) != 0) throw std::runtime_error("CMAC AES: backend decryption failed");
+        for (std::size_t index = 0; index < remaining; ++index) output[index] = block[index] ^ context.iv[index];
+        std::memcpy(context.iv, nextIv, 16);
+    }
+    Cleanse(block, sizeof(block));
+    Cleanse(nextIv, sizeof(nextIv));
 }
 
 int APS5_VABI AesCipher(LibreSslCipherContext* context, unsigned char* output, const unsigned char* input, std::size_t length) {
@@ -146,27 +188,15 @@ int APS5_VABI AesCipher(LibreSslCipherContext* context, unsigned char* output, c
     auto* aes = static_cast<mbedtls_aes_context*>(context->cipherData);
     const int mode = context->encrypt ? MBEDTLS_AES_ENCRYPT : MBEDTLS_AES_DECRYPT;
     const auto complete = length - length % 16;
-    if (complete != 0 && mbedtls_aes_crypt_cbc(aes, mode, complete, context->iv, input, output) != 0)
-        throw std::runtime_error("CMAC AES: backend encryption failed");
     const auto remaining = length - complete;
-    if (remaining == 0) return 1;
-    input += complete;
-    output += complete;
-    unsigned char block[16];
-    unsigned char nextIv[16];
-    if (context->encrypt) {
-        std::memcpy(block, context->iv, 16);
-        for (std::size_t index = 0; index < remaining; ++index) block[index] ^= input[index];
-        if (mbedtls_aes_crypt_ecb(aes, mode, block, output) != 0) throw std::runtime_error("CMAC AES: backend encryption failed");
-        std::memcpy(context->iv, output, 16);
-    } else {
-        std::memcpy(nextIv, input, 16);
-        if (mbedtls_aes_crypt_ecb(aes, mode, input, block) != 0) throw std::runtime_error("CMAC AES: backend decryption failed");
-        for (std::size_t index = 0; index < remaining; ++index) output[index] = block[index] ^ context->iv[index];
-        std::memcpy(context->iv, nextIv, 16);
-    }
-    Cleanse(block, sizeof(block));
-    Cleanse(nextIv, sizeof(nextIv));
+    const auto padded = complete + (remaining == 0 ? 0 : 16);
+    std::vector<unsigned char> source(context->encrypt ? length : padded);
+    std::vector<unsigned char> target(context->encrypt ? padded : length);
+    CopyGuestInPreservingErrno(source.data(), input, source.size(), __func__);
+    CipherBlocks(*context, aes, mode, target.data(), source.data(), complete, remaining);
+    CopyGuestOutPreservingErrno(output, target.data(), target.size(), __func__);
+    Cleanse(source.data(), source.size());
+    Cleanse(target.data(), target.size());
     return 1;
 }
 
@@ -224,7 +254,9 @@ int APS5_VABI CMAC_Update_nid_postfix(LibreSslCmac* context, const void* data, s
     if (context->lastLength == -1) return 0;
     if (length == 0) return 1;
     if (data == nullptr) throw std::invalid_argument("CMAC_Update: null input");
-    const auto* bytes = static_cast<const unsigned char*>(data);
+    std::vector<unsigned char> input(length);
+    CopyGuestInPreservingErrno(input.data(), data, length, __func__);
+    const auto* bytes = input.data();
     const auto blockSize = context->cipherContext.cipher->blockSize;
     if (context->lastLength != 0) {
         const auto take = std::min(length, static_cast<std::size_t>(blockSize - context->lastLength));
@@ -250,7 +282,8 @@ int APS5_VABI CMAC_Final_nid_postfix(LibreSslCmac* context, unsigned char* outpu
     if (context->lastLength == -1) return 0;
     if (length == nullptr) throw std::invalid_argument("CMAC_Final: null output length");
     const auto blockSize = context->cipherContext.cipher->blockSize;
-    *length = blockSize;
+    const std::size_t outputLength = blockSize;
+    CopyGuestOutPreservingErrno(length, &outputLength, sizeof(outputLength), __func__);
     if (output == nullptr) return 1;
     const bool full = context->lastLength == blockSize;
     if (!full) {
@@ -258,10 +291,13 @@ int APS5_VABI CMAC_Final_nid_postfix(LibreSslCmac* context, unsigned char* outpu
         context->lastBlock[context->lastLength] = 0x80;
     }
     const auto* subkey = full ? context->firstSubkey : context->secondSubkey;
-    for (int index = 0; index < blockSize; ++index) output[index] = context->lastBlock[index] ^ subkey[index];
-    if (EncryptBlock(*context, output, output)) return 1;
-    Cleanse(output, blockSize);
-    return 0;
+    unsigned char tag[32];
+    for (int index = 0; index < blockSize; ++index) tag[index] = context->lastBlock[index] ^ subkey[index];
+    const bool encrypted = EncryptBlock(*context, tag, tag);
+    if (!encrypted) Cleanse(tag, blockSize);
+    CopyGuestOutPreservingErrno(output, tag, blockSize, __func__);
+    Cleanse(tag, sizeof(tag));
+    return encrypted ? 1 : 0;
 }
 
 const LibreSslCipher* APS5_VABI EVP_aes_128_cbc_nid_postfix() { return &aes128; }
