@@ -1,11 +1,21 @@
 #include "prx/libSceIcu/libSceIcu.hpp"
 #include <array>
+#include <cerrno>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <stdexcept>
 #include <string>
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#else
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
 
 namespace {
 
@@ -224,6 +234,101 @@ void RoundTrip() {
     }
 }
 
+template<class F>
+void RequiresRuntimeErrorKeepingErrno(F call, const char* message) {
+    errno = 71;
+    bool threw = false;
+    try {
+        call();
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    Require(threw && errno == 71, message);
+}
+
+void GuestPointers() {
+#ifdef _WIN32
+    const std::size_t pageSize = 4096;
+    auto* pages = static_cast<char*>(VirtualAlloc(nullptr, pageSize * 4, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
+    Require(pages != nullptr, "allocate guest pointer pages");
+#else
+    const std::size_t pageSize = static_cast<std::size_t>(sysconf(_SC_PAGESIZE) > 0 ? sysconf(_SC_PAGESIZE) : 4096);
+    void* mapping = mmap(nullptr, pageSize * 4, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    Require(mapping != MAP_FAILED, "allocate guest pointer pages");
+    auto* pages = static_cast<char*>(mapping);
+#endif
+    std::memset(pages, 0x5a, pageSize);
+    std::memcpy(pages, "\x01\x02\x03\x04", 4);
+    std::memcpy(pages + pageSize - 8, "1.2.3", 6);
+    std::memcpy(pages + pageSize - 2, "4.", 2);
+    auto* unitPage = pages + pageSize * 2;
+    auto* units = reinterpret_cast<char16_t*>(unitPage + pageSize) - 32;
+    for (std::size_t index = 0; index < 32; ++index) units[index] = index == 1 ? u'.' : u'7';
+    auto* terminatedUnits = reinterpret_cast<char16_t*>(unitPage);
+    std::memcpy(terminatedUnits, u"5.6", sizeof(u"5.6"));
+    for (const std::size_t page : {std::size_t{0}, std::size_t{2}}) {
+#ifdef _WIN32
+        DWORD oldProtect = 0;
+        Require(VirtualProtect(pages + pageSize * page, pageSize, PAGE_READONLY, &oldProtect) != 0, "protect data page");
+        Require(VirtualProtect(pages + pageSize * (page + 1), pageSize, PAGE_NOACCESS, &oldProtect) != 0, "protect guard page");
+#else
+        Require(mprotect(pages + pageSize * page, pageSize, PROT_READ) == 0, "protect data page");
+        Require(mprotect(pages + pageSize * (page + 1), pageSize, PROT_NONE) == 0, "protect guard page");
+#endif
+    }
+    auto* readOnly = reinterpret_cast<std::uint8_t*>(pages);
+    auto* unmappedVersion = reinterpret_cast<std::uint8_t*>(std::uintptr_t{0x10});
+    const auto* unmappedText = reinterpret_cast<const char*>(std::uintptr_t{0x10});
+    const auto* unmappedUnits = reinterpret_cast<const char16_t*>(std::uintptr_t{0x10});
+    auto* unwritableText = pages + 64;
+
+    Require(FromString(pages + pageSize - 8) == Version{1, 2, 3, 0}, "terminated string ending at the guard page parses");
+    Require(FromUString(terminatedUnits) == Version{5, 6, 0, 0}, "terminated units parse");
+    Require(FromUString(units + 12) == FromString("77777777777777777777"), "twenty unterminated units before the guard page parse");
+    Version unicode{9, 9, 9, 9};
+    u_getUnicodeVersion_nid_postfix(unicode.data());
+    Require(unicode == Version{17, 0, 0, 0}, "Unicode version is 17.0.0.0");
+
+    Version version{9, 9, 9, 9};
+    RequiresRuntimeErrorKeepingErrno([&] { u_versionFromString_nid_postfix(version.data(), unmappedText); },
+                                     "unreadable version string throws and keeps errno");
+    RequiresRuntimeErrorKeepingErrno([&] { u_versionFromString_nid_postfix(version.data(), pages + pageSize - 2); },
+                                     "version string running into the guard page throws and keeps errno");
+    RequiresRuntimeErrorKeepingErrno([&] { u_versionFromUString_nid_postfix(version.data(), unmappedUnits); },
+                                     "unreadable version units throw and keep errno");
+    RequiresRuntimeErrorKeepingErrno([&] { u_versionFromUString_nid_postfix(version.data(), reinterpret_cast<const char16_t*>(unitPage + pageSize) - 3); },
+                                     "version units running into the guard page throw and keep errno");
+    Require(version == Version{9, 9, 9, 9}, "unreadable input leaves the version unchanged");
+    RequiresRuntimeErrorKeepingErrno([&] { u_versionFromString_nid_postfix(readOnly, "5.6"); },
+                                     "unwritable version from a string throws and keeps errno");
+    RequiresRuntimeErrorKeepingErrno([&] { u_versionFromString_nid_postfix(unmappedVersion, nullptr); },
+                                     "unwritable version from a null string throws and keeps errno");
+    RequiresRuntimeErrorKeepingErrno([&] { u_versionFromUString_nid_postfix(readOnly, u"5.6"); },
+                                     "unwritable version from units throws and keeps errno");
+    RequiresRuntimeErrorKeepingErrno([&] { u_getUnicodeVersion_nid_postfix(readOnly); },
+                                     "unwritable Unicode version throws and keeps errno");
+    RequiresRuntimeErrorKeepingErrno([&] { u_getVersion_nid_postfix(unmappedVersion); },
+                                     "unwritable library version throws and keeps errno");
+    Require(std::memcmp(readOnly, "\x01\x02\x03\x04", 4) == 0, "read-only version stays unchanged");
+
+    std::array<char, 21> text;
+    text.fill('X');
+    RequiresRuntimeErrorKeepingErrno([&] { u_versionToString_nid_postfix(unmappedVersion, text.data()); },
+                                     "unreadable version throws and keeps errno");
+    Require(text[0] == 'X', "unreadable version leaves the string unchanged");
+    RequiresRuntimeErrorKeepingErrno([&] { u_versionToString_nid_postfix(readOnly, unwritableText); },
+                                     "unwritable version string throws and keeps errno");
+    RequiresRuntimeErrorKeepingErrno([&] { u_versionToString_nid_postfix(nullptr, unwritableText); },
+                                     "unwritable empty version string throws and keeps errno");
+    u_versionToString_nid_postfix(readOnly, text.data());
+    Require(std::string(text.data()) == "1.2.3.4", "read-only version converts");
+#ifdef _WIN32
+    Require(VirtualFree(pages, 0, MEM_RELEASE) != 0, "release guest pointer pages");
+#else
+    Require(munmap(pages, pageSize * 4) == 0, "release guest pointer pages");
+#endif
+}
+
 }
 
 int main() {
@@ -236,5 +341,6 @@ int main() {
     VersionToString();
     GetVersion();
     RoundTrip();
+    GuestPointers();
     return 0;
 }
