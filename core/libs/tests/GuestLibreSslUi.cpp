@@ -2,12 +2,19 @@
 #include "prx/libc/include/Api.hpp"
 #include "prx/libc/include/ApplicationHeap.hpp"
 #include "prx/libc/include/general/VabiMacros.hpp"
+#include <cerrno>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <source_location>
 #include <stdexcept>
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
 
 static int APS5_VABI Open(void*) { return 1; }
 static int APS5_VABI Close(void*) { return 2; }
@@ -199,6 +206,125 @@ static void TestSetResult() {
     Require(ERR_peek_error_nid_postfix() == 0);
 }
 
+class GuardedPage {
+public:
+    GuardedPage() {
+#ifdef _WIN32
+        SYSTEM_INFO info{};
+        GetSystemInfo(&info);
+        bytes = info.dwPageSize;
+        data = static_cast<char*>(VirtualAlloc(nullptr, bytes * 2, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
+        Require(data != nullptr);
+        DWORD previous{};
+        Require(VirtualProtect(data + bytes, bytes, PAGE_NOACCESS, &previous) != 0);
+#else
+        bytes = static_cast<std::size_t>(sysconf(_SC_PAGESIZE));
+        void* mapped = mmap(nullptr, bytes * 2, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        Require(mapped != MAP_FAILED);
+        data = static_cast<char*>(mapped);
+        Require(mprotect(data + bytes, bytes, PROT_NONE) == 0);
+#endif
+    }
+
+    ~GuardedPage() {
+#ifdef _WIN32
+        VirtualFree(data, 0, MEM_RELEASE);
+#else
+        munmap(data, bytes * 2);
+#endif
+    }
+
+    GuardedPage(const GuardedPage&) = delete;
+    GuardedPage& operator=(const GuardedPage&) = delete;
+
+    char* Tail(const void* value, std::size_t size) {
+        std::memcpy(data + bytes - size, value, size);
+        return data + bytes - size;
+    }
+
+    void ReadOnly() {
+#ifdef _WIN32
+        DWORD previous{};
+        Require(VirtualProtect(data, bytes, PAGE_READONLY, &previous) != 0);
+#else
+        Require(mprotect(data, bytes, PROT_READ) == 0);
+#endif
+    }
+
+private:
+    char* data = nullptr;
+    std::size_t bytes = 0;
+};
+
+template<typename TAction> static void RequireRejected(TAction action, std::source_location location = std::source_location::current()) {
+    errno = 71;
+    bool rejected = false;
+    try {
+        action();
+    } catch (const std::runtime_error&) {
+        rejected = errno == 71;
+    }
+    Require(rejected, location);
+}
+
+static void TestGuestPointers() {
+    auto* unmapped = reinterpret_cast<char*>(0x10);
+    GuardedPage page;
+    RequireRejected([&] { UI_create_method_nid_postfix(unmapped); });
+    RequireRejected([&] { UI_create_method_nid_postfix(page.Tail("ab", 2)); });
+    LibreSslUiMethod* method = UI_create_method_nid_postfix(page.Tail("ab", 3));
+    Require(method != nullptr && method->name != nullptr && !std::strcmp(method->name, "ab"));
+    UI_destroy_method_nid_postfix(method);
+
+    ERR_clear_error_nid_postfix();
+    char buffer[8] = "kept";
+    LibreSslUi ui {};
+    ui.flags = 0x0101;
+    LibreSslUiString prompt {};
+    prompt.type = 1;
+    prompt.resultBuffer = buffer;
+    prompt.data.stringData.resultMinimum = 1;
+    prompt.data.stringData.resultMaximum = 4;
+    RequireRejected([&] { UI_set_result_nid_postfix(&ui, &prompt, unmapped); });
+    RequireRejected([&] { UI_set_result_nid_postfix(&ui, &prompt, page.Tail("ab", 2)); });
+    Require(ui.flags == 0x0101 && !std::strcmp(buffer, "kept"));
+    RequireRejected([&] { UI_set_result_nid_postfix(reinterpret_cast<LibreSslUi*>(unmapped), &prompt, "abc"); });
+    RequireRejected([&] { UI_set_result_nid_postfix(&ui, reinterpret_cast<LibreSslUiString*>(unmapped), "abc"); });
+    Require(ui.flags == 0x0100 && !std::strcmp(buffer, "kept"));
+    auto* partial = reinterpret_cast<LibreSslUiString*>(page.Tail(&prompt, sizeof(prompt) - 8));
+    RequireRejected([&] { UI_set_result_nid_postfix(&ui, partial, "abc"); });
+    Require(UI_set_result_nid_postfix(&ui, &prompt, page.Tail("abcd", 5)) == 0 && !std::strcmp(buffer, "abcd"));
+    prompt.resultBuffer = unmapped;
+    RequireRejected([&] { UI_set_result_nid_postfix(&ui, &prompt, "abc"); });
+    prompt.resultBuffer = page.Tail("....", 3);
+    RequireRejected([&] { UI_set_result_nid_postfix(&ui, &prompt, "abc"); });
+    prompt.resultBuffer = page.Tail("....", 4);
+    Require(UI_set_result_nid_postfix(&ui, &prompt, "abc") == 0 && !std::memcmp(prompt.resultBuffer, "abc", 4));
+    prompt.resultBuffer = buffer;
+
+    LibreSslUiString boolean {};
+    boolean.type = 3;
+    boolean.resultBuffer = buffer;
+    boolean.data.booleanData.okCharacters = unmapped;
+    boolean.data.booleanData.cancelCharacters = "nN";
+    RequireRejected([&] { UI_set_result_nid_postfix(&ui, &boolean, "y"); });
+    boolean.data.booleanData.okCharacters = page.Tail("yY", 2);
+    RequireRejected([&] { UI_set_result_nid_postfix(&ui, &boolean, "y"); });
+    boolean.data.booleanData.okCharacters = "yY";
+    boolean.data.booleanData.cancelCharacters = unmapped;
+    RequireRejected([&] { UI_set_result_nid_postfix(&ui, &boolean, "n"); });
+    Require(UI_set_result_nid_postfix(&ui, &boolean, "Yx") == 0 && buffer[0] == 'y');
+    boolean.resultBuffer = unmapped;
+    RequireRejected([&] { UI_set_result_nid_postfix(&ui, &boolean, "y"); });
+    Require(ERR_peek_error_nid_postfix() == 0);
+
+    ui.flags = 0x0101;
+    auto* readOnly = reinterpret_cast<LibreSslUi*>(page.Tail(&ui, sizeof(ui)));
+    page.ReadOnly();
+    RequireRejected([&] { UI_set_result_nid_postfix(readOnly, &prompt, "abc"); });
+    Require(readOnly->flags == 0x0101 && !std::strcmp(buffer, "ybcd"));
+}
+
 int main() {
     InitializeHeap();
     TestCreate();
@@ -212,5 +338,6 @@ int main() {
     TestSetCloser();
     TestGetCloser();
     TestSetResult();
+    TestGuestPointers();
     std::puts("libSceLibreSsl UI method tests passed");
 }
