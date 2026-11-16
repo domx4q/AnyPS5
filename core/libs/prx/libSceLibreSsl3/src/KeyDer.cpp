@@ -1,8 +1,12 @@
 /* Derived from LibreSSL 4.0.0 (openbsd ce488b78e0bd994780569df718596b9776ff681a) src/lib/libcrypto/asn1/x_pubkey.c (x_pubkey.c,v 1.37),
  * src/lib/libcrypto/asn1/p8_pkey.c (p8_pkey.c,v 1.25),
  * src/lib/libcrypto/evp/evp_pkey.c (evp_pkey.c,v 1.32),
- * src/lib/libcrypto/asn1/a_pkey.c (a_pkey.c,v 1.8)
- * and src/lib/libcrypto/asn1/asn1_item.c (asn1_item.c,v 1.21) */
+ * src/lib/libcrypto/asn1/a_pkey.c (a_pkey.c,v 1.8),
+ * src/lib/libcrypto/asn1/asn1_item.c (asn1_item.c,v 1.21),
+ * src/lib/libcrypto/asn1/tasn_enc.c (tasn_enc.c,v 1.33),
+ * src/lib/libcrypto/ec/ec_ameth.c (ec_ameth.c,v 1.69),
+ * src/lib/libcrypto/ec/ec_asn1.c (ec_asn1.c,v 1.53)
+ * and src/lib/libcrypto/rsa/rsa_ameth.c (rsa_ameth.c,v 1.60) */
 /* $OpenBSD: p8_pkey.c,v 1.25 2024/07/08 14:48:49 beck Exp $ */
 /* Written by Dr Stephen N Henson (steve@openssl.org) for the OpenSSL
  * project 1999.
@@ -347,6 +351,7 @@
  */
 
 #include "prx/libSceLibreSsl3/libSceLibreSsl3.hpp"
+#include "prx/libSceLibreSsl3/include/Objects.hpp"
 #include "prx/libSceLibreSsl3/include/PkeyMethod.hpp"
 #include "prx/libSceLibreSsl3/include/PkeyState.hpp"
 #include "prx/libSceLibreSsl/include/Ec.hpp"
@@ -355,11 +360,14 @@
 #include "prx/libc/include/General.hpp"
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <limits>
 #include <span>
+#include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace {
@@ -390,8 +398,12 @@ constexpr int EvpRPrivateKeyEncodeError = 146;
 constexpr int EvpRUnsupportedAlgorithm = 156;
 
 constexpr int X509RUnsupportedAlgorithm = 111;
+constexpr int X509RMethodNotSupported = 124;
 constexpr int X509RPublicKeyDecodeError = 125;
+constexpr int X509RPublicKeyEncodeError = 126;
 
+constexpr int ErrREcLib = 16;
+constexpr int EcRMissingParameters = 124;
 constexpr int EcRDecodeError = 142;
 
 constexpr int Asn1TypeNull = 5;
@@ -400,8 +412,12 @@ constexpr int Asn1TypeOctetString = 4;
 constexpr int Asn1ObjDynamic = 0x01;
 constexpr int Asn1ObjDynamicData = 0x08;
 
+constexpr int NoKeyType = 0;
 constexpr int RsaType = 6;
+constexpr int Rsa2Type = 19;
 constexpr int EcType = 408;
+constexpr int HmacType = 855;
+constexpr int CmacType = 894;
 constexpr int Secp256r1 = 415;
 constexpr int Secp384r1 = 715;
 constexpr int PointConversionUncompressed = 4;
@@ -1285,6 +1301,92 @@ bool ReadSingleDerObjectFromBio(LibreSsl::Bio* bio, std::vector<unsigned char>& 
     return true;
 }
 
+bool EncodeEcPublicKey(const EcKey* ec, std::vector<unsigned char>& algorithm, std::vector<unsigned char>& point) {
+    if (!ec) throw std::invalid_argument("i2d_PUBKEY: null EC key");
+    if (!ec->group) {
+        PutError(ErrLibEc, EcRMissingParameters);
+        PutError(ErrLibEc, ErrREcLib);
+        return false;
+    }
+    if (ec->group->asn1Flag == 0) NotImplementedAt_nid_no_patch("i2d_PUBKEY: explicit EC parameters", __FILE__, __LINE__);
+    const LibreSslAsn1Object* curve = LibreSsl3::ObjectByNid(ec->group->curve.nid);
+    if (!curve || !curve->data || curve->length <= 0) {
+        PutError(ErrLibEc, ErrREcLib);
+        return false;
+    }
+    const std::size_t length = EC_POINT_point2oct_nid_postfix(
+        ec->group, ec->publicKey, ec->conversionForm, nullptr, 0, nullptr);
+    if (length == 0) return false;
+    point.resize(length);
+    if (EC_POINT_point2oct_nid_postfix(ec->group, ec->publicKey, ec->conversionForm, point.data(), length, nullptr)
+        != length) {
+        PutError(ErrLibEc, ErrREcLib);
+        return false;
+    }
+    algorithm = Wrap(0x06, EcPublicKeyOid);
+    Append(algorithm, Wrap(0x06, std::span<const unsigned char>(curve->data, static_cast<std::size_t>(curve->length))));
+    return true;
+}
+
+bool EncodeSpki(const LibreSsl3EvpPkey& key, std::vector<unsigned char>& out) {
+    std::vector<unsigned char> algorithm;
+    std::vector<unsigned char> publicKey;
+    bool encoded = false;
+    switch (key.type) {
+    case NoKeyType:
+        PutError(ErrLibX509, X509RUnsupportedAlgorithm);
+        return false;
+    case HmacType:
+    case CmacType:
+        PutError(ErrLibX509, X509RMethodNotSupported);
+        return false;
+    case RsaType:
+    case Rsa2Type:
+        encoded = key.key && EncodeRsa(static_cast<const LibreSsl3Rsa*>(key.key), false, publicKey);
+        algorithm = Wrap(0x06, RsaOid);
+        Append(algorithm, Wrap(0x05, {}));
+        break;
+    case EcType:
+        encoded = EncodeEcPublicKey(static_cast<const EcKey*>(key.key), algorithm, publicKey);
+        break;
+    default:
+        NotImplemented_nid_no_patch(("i2d_PUBKEY: public key encoding of key type " + std::to_string(key.type)).c_str());
+    }
+    if (!encoded) {
+        PutError(ErrLibX509, X509RPublicKeyEncodeError);
+        return false;
+    }
+    std::vector<unsigned char> bits{0};
+    bits.insert(bits.end(), publicKey.begin(), publicKey.end());
+    std::vector<unsigned char> body = Wrap(0x30, algorithm);
+    Append(body, Wrap(0x03, bits));
+    out = Wrap(0x30, body);
+    return true;
+}
+
+template<typename T> T CopyInPreservingErrno(const void* guest, const char* function) {
+    const int savedErrno = errno;
+    T value{};
+    const bool ok = GuestCopyIn_nid_no_patch(&value, guest, sizeof(value));
+    errno = savedErrno;
+    if (!ok) NotImplementedAt_nid_no_patch(function, __FILE__, __LINE__);
+    return value;
+}
+
+void CopyOutPreservingErrno(void* guest, const void* value, std::size_t size, const char* function) {
+    const int savedErrno = errno;
+    const bool ok = GuestCopyOut_nid_no_patch(guest, value, size);
+    errno = savedErrno;
+    if (!ok) NotImplementedAt_nid_no_patch(function, __FILE__, __LINE__);
+}
+
+void EnsureWritablePreservingErrno(void* guest, std::size_t size, const char* function) {
+    const int savedErrno = errno;
+    const bool ok = GuestWritable_nid_no_patch(guest, size);
+    errno = savedErrno;
+    if (!ok) NotImplementedAt_nid_no_patch(function, __FILE__, __LINE__);
+}
+
 template<typename T> void ReplaceOutput(T** output, T* decoded, void (APS5_VABI* freeValue)(T*)) {
     if (!output) return;
     if (*output) freeValue(*output);
@@ -1307,6 +1409,31 @@ LibreSsl3EvpPkey* APS5_VABI d2i_PUBKEY_nid_postfix(
     ReplaceOutput(output, key, EVP_PKEY_free_nid_disambig1_nid_postfix);
     *input += static_cast<std::size_t>(length) - remaining.size();
     return key;
+}
+
+int APS5_VABI i2d_PUBKEY_nid_postfix(const LibreSsl3EvpPkey* key, unsigned char** output) {
+    if (!key) return 0;
+    const auto value = CopyInPreservingErrno<LibreSsl3EvpPkey>(key, __func__);
+    std::vector<unsigned char> encoded;
+    if (!EncodeSpki(value, encoded)) return -1;
+    if (encoded.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()))
+        NotImplementedAt_nid_no_patch("i2d_PUBKEY: encoding longer than INT_MAX", __FILE__, __LINE__);
+    const int length = static_cast<int>(encoded.size());
+    if (!output) return length;
+    auto* destination = CopyInPreservingErrno<unsigned char*>(output, __func__);
+    EnsureWritablePreservingErrno(output, sizeof(destination), __func__);
+    if (!destination) {
+        auto* buffer = static_cast<unsigned char*>(calloc_nid_postfix(1, encoded.size()));
+        if (!buffer) return -1;
+        std::memcpy(buffer, encoded.data(), encoded.size());
+        CopyOutPreservingErrno(output, &buffer, sizeof(buffer), __func__);
+        return length;
+    }
+    EnsureWritablePreservingErrno(destination, encoded.size(), __func__);
+    CopyOutPreservingErrno(destination, encoded.data(), encoded.size(), __func__);
+    destination += encoded.size();
+    CopyOutPreservingErrno(output, &destination, sizeof(destination), __func__);
+    return length;
 }
 
 LibreSsl3Pkcs8PrivKeyInfo* APS5_VABI d2i_PKCS8_PRIV_KEY_INFO_nid_postfix(

@@ -4,6 +4,7 @@
 #include "prx/libSceLibreSsl/include/Ec.hpp"
 #include "prx/libc/include/Api.hpp"
 #include "prx/libc/include/ApplicationHeap.hpp"
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -11,6 +12,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <source_location>
+#include <stdexcept>
 #include <vector>
 
 namespace {
@@ -34,6 +36,8 @@ constexpr int Asn1RWrongTag = 168;
 constexpr int EvpRUnsupportedPrivateKeyAlgorithm = 118;
 constexpr int EvpRUnsupportedAlgorithm = 156;
 constexpr int X509RUnsupportedAlgorithm = 111;
+constexpr int X509RMethodNotSupported = 124;
+constexpr int X509RPublicKeyEncodeError = 126;
 
 void Require(bool condition, std::source_location location = std::source_location::current()) {
     if (condition) return;
@@ -624,6 +628,104 @@ void TestBioMalformedAndMultiChunkObjects() {
     PKCS8_PRIV_KEY_INFO_free_nid_postfix(refP8);
 }
 
+std::vector<unsigned char> EncodePubkey(const LibreSsl3EvpPkey* key) {
+    const int sizeOnly = i2d_PUBKEY_nid_postfix(key, nullptr);
+    Require(sizeOnly > 0);
+    unsigned char* allocated = nullptr;
+    Require(i2d_PUBKEY_nid_postfix(key, &allocated) == sizeOnly && allocated != nullptr);
+    std::vector<unsigned char> written(static_cast<std::size_t>(sizeOnly) + 1, 0xee);
+    unsigned char* cursor = written.data();
+    Require(i2d_PUBKEY_nid_postfix(key, &cursor) == sizeOnly);
+    Require(cursor == written.data() + sizeOnly && written.back() == 0xee);
+    written.pop_back();
+    Require(std::memcmp(allocated, written.data(), written.size()) == 0);
+    free_nid_postfix(allocated);
+    return written;
+}
+
+LibreSsl3EvpPkey* DecodePubkey(const std::vector<unsigned char>& der) {
+    const unsigned char* cursor = der.data();
+    LibreSsl3EvpPkey* key = d2i_PUBKEY_nid_postfix(nullptr, &cursor, static_cast<std::int64_t>(der.size()));
+    Require(key != nullptr && cursor == der.data() + der.size());
+    return key;
+}
+
+void TestPubkeyEncoding() {
+    LibreSsl3EvpPkey* rsa = DecodePubkey(RsaSpkiDer);
+    Require(EncodePubkey(rsa) == RsaSpkiDer);
+    rsa->type = 19;
+    Require(EncodePubkey(rsa) == RsaSpkiDer);
+    rsa->type = RsaType;
+    EVP_PKEY_free_nid_disambig1_nid_postfix(rsa);
+
+    LibreSsl3EvpPkey* p256 = DecodePubkey(P256SpkiDer);
+    Require(EncodePubkey(p256) == P256SpkiDer);
+    auto* p256Ec = static_cast<EcKey*>(p256->key);
+    p256Ec->conversionForm = 2;
+    const std::vector<unsigned char> compressed = EncodePubkey(p256);
+    Require(compressed.size() == P256SpkiDer.size() - 32);
+    Require(compressed[1] == compressed.size() - 2 && compressed[24] == 0x22 && compressed[25] == 0);
+    Require(compressed[26] == 0x02 + (P256SpkiDer.back() & 1));
+    Require(std::memcmp(compressed.data() + 27, P256SpkiDer.data() + 27, 32) == 0);
+    LibreSsl3EvpPkey* fromCompressed = DecodePubkey(compressed);
+    CompareEcKeys(p256Ec, static_cast<const EcKey*>(fromCompressed->key), false);
+    EVP_PKEY_free_nid_disambig1_nid_postfix(fromCompressed);
+    EVP_PKEY_free_nid_disambig1_nid_postfix(p256);
+
+    const unsigned char* privCursor = P384Pkcs8Der.data();
+    LibreSsl3Pkcs8PrivKeyInfo* p8 = d2i_PKCS8_PRIV_KEY_INFO_nid_postfix(
+        nullptr, &privCursor, static_cast<std::int64_t>(P384Pkcs8Der.size()));
+    Require(p8 != nullptr);
+    LibreSsl3EvpPkey* p384 = EVP_PKCS82PKEY_nid_postfix(p8);
+    Require(p384 != nullptr && p384->type == EcType);
+    const std::vector<unsigned char> p384Spki = EncodePubkey(p384);
+    const std::vector<unsigned char> p384Header = Hex("3076301006072a8648ce3d020106052b81040022036200");
+    Require(p384Spki.size() == p384Header.size() + 97);
+    Require(std::equal(p384Header.begin(), p384Header.end(), p384Spki.begin()));
+    LibreSsl3EvpPkey* p384Pub = DecodePubkey(p384Spki);
+    CompareEcKeys(static_cast<const EcKey*>(p384->key), static_cast<const EcKey*>(p384Pub->key), false);
+    EVP_PKEY_free_nid_disambig1_nid_postfix(p384Pub);
+    EVP_PKEY_free_nid_disambig1_nid_postfix(p384);
+    PKCS8_PRIV_KEY_INFO_free_nid_postfix(p8);
+
+    ERR_clear_error_nid_postfix();
+    unsigned char* untouched = nullptr;
+    Require(i2d_PUBKEY_nid_postfix(nullptr, &untouched) == 0 && untouched == nullptr);
+    Require(ERR_get_error_nid_postfix() == 0);
+
+    LibreSsl3EvpPkey* empty = EVP_PKEY_new_nid_disambig1_nid_postfix();
+    Require(empty != nullptr);
+    Require(i2d_PUBKEY_nid_postfix(empty, &untouched) == -1 && untouched == nullptr);
+    ExpectError(ErrLibX509, X509RUnsupportedAlgorithm);
+    Require(ERR_get_error_nid_postfix() == 0);
+    empty->type = 855;
+    Require(i2d_PUBKEY_nid_postfix(empty, nullptr) == -1);
+    ExpectError(ErrLibX509, X509RMethodNotSupported);
+    empty->type = RsaType;
+    Require(i2d_PUBKEY_nid_postfix(empty, nullptr) == -1);
+    ExpectError(ErrLibX509, X509RPublicKeyEncodeError);
+    empty->type = 0;
+    EVP_PKEY_free_nid_disambig1_nid_postfix(empty);
+
+    EcKey* explicitGroup = EC_KEY_new_by_curve_name_nid_postfix(Secp256r1);
+    Require(explicitGroup != nullptr && EC_KEY_generate_key_nid_postfix(explicitGroup) == 1);
+    Require(explicitGroup->group->asn1Flag == 0);
+    LibreSsl3EvpPkey* explicitKey = EVP_PKEY_new_nid_disambig1_nid_postfix();
+    Require(EVP_PKEY_assign_nid_postfix(explicitKey, EcType, explicitGroup) == 1);
+    bool threw = false;
+    try {
+        i2d_PUBKEY_nid_postfix(explicitKey, nullptr);
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    Require(threw);
+    explicitGroup->group->asn1Flag = 1;
+    const std::vector<unsigned char> named = EncodePubkey(explicitKey);
+    Require(named.size() == P256SpkiDer.size());
+    Require(std::equal(named.begin(), named.begin() + 27, P256SpkiDer.begin()));
+    EVP_PKEY_free_nid_disambig1_nid_postfix(explicitKey);
+}
+
 void* APS5_VABI HeapAllocate(std::size_t size) { return std::malloc(size == 0 ? 1 : size); }
 void APS5_VABI HeapFree(void* pointer) { std::free(pointer); }
 void* APS5_VABI HeapCallocate(std::size_t count, std::size_t size) {
@@ -658,5 +760,6 @@ int main() {
     TestConsecutiveBioObjects();
     TestPkcs8AttributesRoundTrip();
     TestBioMalformedAndMultiChunkObjects();
+    TestPubkeyEncoding();
     return 0;
 }
