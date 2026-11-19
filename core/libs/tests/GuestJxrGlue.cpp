@@ -8,6 +8,7 @@
 #include <array>
 #include <vector>
 #include <utility>
+#include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -445,6 +446,9 @@ void TestAlignedAllocation() {
     Require(PKFreeAligned_nid_postfix(&memory) == 0 && frees == before);
     Require(PKFreeAligned_nid_postfix(nullptr) == 0 && frees == before);
     RequireThrows([] { PKAllocAligned_nid_postfix(nullptr, 32, 16); });
+    errno = 75;
+    RequireThrows([] { PKAllocAligned_nid_postfix(reinterpret_cast<void**>(std::uintptr_t{0x10}), 32, 16); });
+    Require(errno == 75 && frees == before);
     memory = reinterpret_cast<void*>(std::uintptr_t{1});
     RequireThrows([&memory] { PKAllocAligned_nid_postfix(&memory, 32, 0); });
     Require(memory == nullptr);

@@ -90,6 +90,21 @@ bool CopyGuestRange(std::uintptr_t destBase, std::uintptr_t sourceBase, std::siz
     return true;
 }
 
+bool CopyInPointer(void*& value, void* const* source) {
+    const int savedErrno = errno;
+    const bool copied = GuestCopyIn_nid_no_patch(&value, source, sizeof(value));
+    errno = savedErrno;
+    return copied;
+}
+
+bool PublishPointer(void** destination, void* allocation) {
+    const int savedErrno = errno;
+    const bool copied = GuestCopyOut_nid_no_patch(destination, &allocation, sizeof(allocation));
+    errno = savedErrno;
+    if (!copied && allocation) free_nid_postfix(allocation);
+    return copied;
+}
+
 template<typename TSlot, typename TFunction>
 TSlot Slot(TFunction* function) {
     return reinterpret_cast<TSlot>(function);
@@ -114,9 +129,9 @@ extern "C" {
 APS5_DUMMY_FUN
 std::int64_t APS5_VABI PKFree_nid_postfix(void** memory) {
     if (memory != nullptr) {
-        free_nid_postfix(*memory);
-
-        *memory = nullptr;
+        void* allocation = nullptr;
+        if (!CopyInPointer(allocation, memory) || !PublishPointer(memory, nullptr)) APS5_INVALID_ARG_EX;
+        free_nid_postfix(allocation);
     }
     return WmpErrSuccess;
 }
@@ -159,9 +174,11 @@ std::int64_t APS5_VABI writeIS_nid_postfix(void*, Jxr::BitIo* io) {
 
 std::int64_t APS5_VABI CreateWS_Memory_nid_postfix(Jxr::Stream** stream, void* buffer, std::size_t size) {
     if (!stream) APS5_INVALID_ARG_EX;
-    const auto result = WMPAlloc_nid_postfix(reinterpret_cast<void**>(stream), sizeof(Jxr::Stream));
+    void* allocation = nullptr;
+    const auto result = WMPAlloc_nid_postfix(&allocation, sizeof(Jxr::Stream));
+    if (!PublishPointer(reinterpret_cast<void**>(stream), allocation)) APS5_INVALID_ARG_EX;
     if (result < 0) return result;
-    auto* created = *stream;
+    auto* created = static_cast<Jxr::Stream*>(allocation);
     created->state[MemoryBuffer] = reinterpret_cast<std::uintptr_t>(buffer);
     created->state[MemorySize] = size;
     created->state[MemoryPosition] = 0;
@@ -216,9 +233,11 @@ int APS5_VABI PKCodecFactory_CreateDecoderFromFile_nid_postfix() {
 
 std::int64_t APS5_VABI PKCodecFactory_CreateFormatConverter_nid_postfix(void** converter) {
     if (!converter) APS5_INVALID_ARG_EX;
-    const auto result = AllocateZeroed(converter, sizeof(Jxr::FormatConverter));
+    void* allocation = nullptr;
+    const auto result = AllocateZeroed(&allocation, sizeof(Jxr::FormatConverter));
+    if (!PublishPointer(converter, allocation)) APS5_INVALID_ARG_EX;
     if (result != WmpErrSuccess) return result;
-    auto* value = static_cast<Jxr::FormatConverter*>(*converter);
+    auto* value = static_cast<Jxr::FormatConverter*>(allocation);
     value->initialize = Slot<decltype(value->initialize)>(&PKFormatConverter_Initialize_nid_postfix);
     value->initializeConvert = Slot<decltype(value->initializeConvert)>(&PKFormatConverter_InitializeConvert_nid_postfix);
     value->getPixelFormat = Slot<decltype(value->getPixelFormat)>(&PKFormatConverter_GetPixelFormat_nid_postfix);
@@ -258,9 +277,11 @@ std::int64_t APS5_VABI PKCreateFactory_Release_nid_postfix(void** factory) {
 
 std::int64_t APS5_VABI PKCreateFactory_nid_postfix(void** factory, std::uint32_t) {
     if (!factory) APS5_INVALID_ARG_EX;
-    const auto result = AllocateZeroed(factory, sizeof(Jxr::Factory));
+    void* allocation = nullptr;
+    const auto result = AllocateZeroed(&allocation, sizeof(Jxr::Factory));
+    if (!PublishPointer(factory, allocation)) APS5_INVALID_ARG_EX;
     if (result != WmpErrSuccess) return result;
-    auto* value = static_cast<Jxr::Factory*>(*factory);
+    auto* value = static_cast<Jxr::Factory*>(allocation);
     value->createStream = Slot<decltype(value->createStream)>(&PKCreateFactory_CreateStream_nid_postfix);
     value->createStreamFromFilename = &CreateStreamFromFilename_nid_no_patch;
     value->createStreamFromMemory = Slot<decltype(value->createStreamFromMemory)>(&CreateWS_Memory_nid_postfix);

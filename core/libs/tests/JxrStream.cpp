@@ -467,6 +467,7 @@ void MemoryCreate() {
         CloseMemory(stream);
     }
     RequireInvalidArgument([&] { CreateWS_Memory_nid_postfix(nullptr, bytes.data(), bytes.size()); }, "memory stream creation accepted a null stream pointer");
+    RequireInvalidArgument([&] { CreateWS_Memory_nid_postfix(reinterpret_cast<Jxr::Stream**>(0x10), bytes.data(), bytes.size()); }, "memory stream creation accepted an unmapped stream pointer");
 }
 
 void MemoryRead() {

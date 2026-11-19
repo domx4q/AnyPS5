@@ -102,6 +102,9 @@ void Factory() {
 
     Require(factory->release(&factory) == 0 && !factory, "factory release fails");
     RequireInvalidArgument([] { PKCreateFactory_nid_postfix(nullptr, 0); }, "null factory pointer is accepted");
+    const int blocksBeforeFactory = liveBlocks;
+    RequireInvalidArgument([] { PKCreateFactory_nid_postfix(reinterpret_cast<void**>(0x10), 0); }, "unmapped factory pointer is accepted");
+    Require(liveBlocks == blocksBeforeFactory, "unmapped factory pointer leaks the factory");
     RequireInvalidArgument([] { PKCreateFactory_CreateStream_nid_postfix(nullptr); }, "null stream pointer is accepted");
 
     failAllocation = true;
@@ -140,6 +143,9 @@ void Codecs() {
     Require(value->decoder == nullptr, "converter decoder is set");
     Require(PKFree_nid_postfix(&converter) == 0 && !converter, "converter release fails");
     RequireInvalidArgument([&] { factory->createFormatConverter(nullptr); }, "null converter pointer is accepted");
+    const int blocksBeforeConverter = liveBlocks;
+    RequireInvalidArgument([&] { factory->createFormatConverter(reinterpret_cast<void**>(0x10)); }, "unmapped converter pointer is accepted");
+    Require(liveBlocks == blocksBeforeConverter, "unmapped converter pointer leaks the converter");
 
     failAllocation = true;
     converter = reinterpret_cast<void*>(1);

@@ -4,6 +4,7 @@
 #include "DecodeCallbacks.h"
 #include "prx/libc/include/General.hpp"
 #include "prx/libSceJxr/include/GuidExports.hpp"
+#include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -59,6 +60,20 @@ void JxrGuestFree_nid_no_patch(void* memory) {
 namespace {
 
 constexpr std::uint32_t ImageUnsupported = 100;
+
+bool CopyPointerIn(void*& value, void* const* source) {
+    const int savedErrno = errno;
+    const bool copied = GuestCopyIn_nid_no_patch(&value, source, sizeof(value));
+    errno = savedErrno;
+    return copied;
+}
+
+bool CopyPointerOut(void** destination, void* value) {
+    const int savedErrno = errno;
+    const bool copied = GuestCopyOut_nid_no_patch(destination, &value, sizeof(value));
+    errno = savedErrno;
+    return copied;
+}
 
 #define JXR_DEFINE_CONVERTER_TRAMPOLINE(name) \
     std::int64_t APS5_VABI Convert_##name(JxrGuestFormatConverter* converter, const void* rectangle, \
@@ -199,13 +214,19 @@ std::int64_t APS5_VABI PKFormatConverter_Initialize_nid_postfix(JxrGuestFormatCo
 
 std::int64_t APS5_VABI PKAllocAligned_nid_postfix(void** memory, std::size_t size, std::size_t alignment) {
     if (!memory) throw std::invalid_argument("PKAllocAligned requires an output pointer");
-    *memory = nullptr;
+    if (!CopyPointerOut(memory, nullptr)) throw std::invalid_argument("PKAllocAligned: unwritable output pointer");
     if (alignment < sizeof(void*))
         throw std::invalid_argument("PKAllocAligned: alignments below 8 can leave no room for the original pointer");
     constexpr auto maximum = std::numeric_limits<std::size_t>::max();
     if (size > maximum - sizeof(void*) || alignment - 1 > maximum - sizeof(void*) - size)
         throw std::length_error("PKAllocAligned: block size overflows size_t");
-    return JxrAllocAligned_nid_no_patch(memory, size, alignment);
+    void* allocation = nullptr;
+    const auto result = JxrAllocAligned_nid_no_patch(&allocation, size, alignment);
+    if (!CopyPointerOut(memory, allocation)) {
+        if (allocation) JxrFreeAligned_nid_no_patch(&allocation);
+        throw std::invalid_argument("PKAllocAligned: unwritable output pointer");
+    }
+    return result;
 }
 
 std::int64_t APS5_VABI PKFreeAligned_nid_postfix(void** memory) {
@@ -272,9 +293,13 @@ std::int64_t APS5_VABI PKImageDecode_GetDescriptiveMetadata_nid_postfix(void* de
 }
 
 std::int64_t APS5_VABI PKImageDecode_Release_nid_postfix(void** decoder) {
-    if (!decoder || !*decoder) throw std::invalid_argument("PKImageDecode_Release requires a decoder");
-    if (!JxrDecodeHasClose_nid_no_patch(*decoder)) throw std::invalid_argument("PKImageDecode_Release requires a stream Close callback when the decoder owns its stream");
-    return JxrDecodeRelease_nid_no_patch(decoder);
+    void* local = nullptr;
+    if (!decoder || !CopyPointerIn(local, decoder) || !local) throw std::invalid_argument("PKImageDecode_Release requires a decoder");
+    if (!JxrDecodeHasClose_nid_no_patch(local)) throw std::invalid_argument("PKImageDecode_Release requires a stream Close callback when the decoder owns its stream");
+    if (!GuestWritable_nid_no_patch(decoder, sizeof(local))) throw std::invalid_argument("PKImageDecode_Release: unwritable decoder pointer");
+    const auto result = JxrDecodeRelease_nid_no_patch(&local);
+    if (!CopyPointerOut(decoder, local)) throw std::invalid_argument("PKImageDecode_Release: unwritable decoder pointer");
+    return result;
 }
 
 std::int64_t APS5_VABI PKImageDecode_Create_nid_postfix(void** decoder) {

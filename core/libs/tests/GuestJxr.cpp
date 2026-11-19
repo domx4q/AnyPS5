@@ -13,6 +13,14 @@
 #include <cstdio>
 #include <limits>
 #include <stdexcept>
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <sys/mman.h>
+#endif
 
 extern "C" {
 void* JxrTileFixtureReset(std::uint32_t sliceCount);
@@ -57,6 +65,37 @@ void RequireThrows(F&& function) {
     } catch (const std::invalid_argument&) {
     }
 }
+
+class PointerPage {
+    void* page = nullptr;
+
+public:
+    PointerPage() {
+#ifdef _WIN32
+        page = VirtualAlloc(nullptr, 4096, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        Require(page != nullptr);
+#else
+        page = mmap(nullptr, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        Require(page != MAP_FAILED);
+#endif
+    }
+    ~PointerPage() {
+#ifdef _WIN32
+        VirtualFree(page, 0, MEM_RELEASE);
+#else
+        munmap(page, 4096);
+#endif
+    }
+    void** Slot() const { return static_cast<void**>(page); }
+    void Writable(bool writable) {
+#ifdef _WIN32
+        DWORD previous = 0;
+        Require(VirtualProtect(page, 4096, writable ? PAGE_READWRITE : PAGE_READONLY, &previous) != 0);
+#else
+        Require(mprotect(page, 4096, writable ? PROT_READ | PROT_WRITE : PROT_READ) == 0);
+#endif
+    }
+};
 
 void* lastFreed = nullptr;
 int frees = 0;
@@ -1149,6 +1188,25 @@ void TestDecodeRelease() {
     RequireThrows([&] { PKImageDecode_Release_nid_postfix(nullptr); });
     void* nullDecoder = nullptr;
     RequireThrows([&] { PKImageDecode_Release_nid_postfix(&nullDecoder); });
+    errno = 76;
+    RequireThrows([&] { PKImageDecode_Release_nid_postfix(reinterpret_cast<void**>(0x10)); });
+    Require(errno == 76);
+    {
+        PointerPage page;
+        Jxr::Stream stream{};
+        stream.close = &MockClose;
+        *page.Slot() = NewDecoder();
+        void* const decoder = *page.Slot();
+        JxrDecodeFixtureSetStream_nid_no_patch(decoder, &stream, 1);
+        page.Writable(false);
+        const int freesBeforeReadOnly = frees;
+        streamCloseCount = 0;
+        RequireThrows([&] { PKImageDecode_Release_nid_postfix(page.Slot()); });
+        Require(errno == 76 && *page.Slot() == decoder && frees == freesBeforeReadOnly && streamCloseCount == 0);
+        page.Writable(true);
+        Require(PKImageDecode_Release_nid_postfix(page.Slot()) == 0);
+        Require(*page.Slot() == nullptr && frees == freesBeforeReadOnly + 1 && streamCloseCount == 1);
+    }
 
     Jxr::Stream closable{};
     closable.close = &MockClose;
@@ -1279,6 +1337,19 @@ int main() {
     catch (const std::invalid_argument&) { threw = true; }
     Require(threw && errno == 74);
     Require(callocCalls == callsBeforeUnmapped + 1 && frees == freesBeforeUnmapped + 1 && lastFreed == lastAllocated);
+    {
+    RequireThrows([] { PKFree_nid_postfix(reinterpret_cast<void**>(0x10)); });
+    PointerPage page;
+    Require(PKAlloc_nid_postfix(page.Slot(), 16) == 0 && *page.Slot() != nullptr);
+    void* const allocation = *page.Slot();
+    page.Writable(false);
+    const auto freesBeforeReadOnly = frees;
+    errno = 74;
+    RequireThrows([&] { PKFree_nid_postfix(page.Slot()); });
+    Require(errno == 74 && frees == freesBeforeReadOnly && *page.Slot() == allocation);
+    page.Writable(true);
+    Require(PKFree_nid_postfix(page.Slot()) == 0 && *page.Slot() == nullptr && frees == freesBeforeReadOnly + 1 && lastFreed == allocation);
+    }
     {
     JxrGuestFormatConverter converter{};
     std::memset(&converter, 0x5a, sizeof(converter));
