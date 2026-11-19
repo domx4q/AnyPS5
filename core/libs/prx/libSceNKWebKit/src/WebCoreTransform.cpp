@@ -111,15 +111,19 @@ FloatPoint InternalMapPoint(const TransformationMatrix& tm, const FloatPoint& p)
 
 extern "C" {
 void APS5_VABI _ZN7WebCore15AffineTransform12makeIdentityEv(WebCore::AffineTransform* self) {
-    self->m_transform = {1.0, 0.0, 0.0, 1.0, 0.0, 0.0};
+    const WebCore::AffineTransform transform{{1.0, 0.0, 0.0, 1.0, 0.0, 0.0}};
+    if (!GuestCopyOut_nid_no_patch(self, &transform, sizeof(transform))) NotImplementedAt_nid_no_patch(__func__, __FILE__, __LINE__);
 }
 
 WebCore::AffineTransform& APS5_VABI _ZN7WebCore15AffineTransform15scaleNonUniformEdd(
     WebCore::AffineTransform* self, double sx, double sy) {
-    self->m_transform[0] *= sx;
-    self->m_transform[1] *= sx;
-    self->m_transform[2] *= sy;
-    self->m_transform[3] *= sy;
+    WebCore::AffineTransform transform{};
+    if (!GuestCopyIn_nid_no_patch(&transform, self, sizeof(transform))) NotImplementedAt_nid_no_patch(__func__, __FILE__, __LINE__);
+    transform.m_transform[0] *= sx;
+    transform.m_transform[1] *= sx;
+    transform.m_transform[2] *= sy;
+    transform.m_transform[3] *= sy;
+    if (!GuestCopyOut_nid_no_patch(self, &transform, sizeof(transform))) NotImplementedAt_nid_no_patch(__func__, __FILE__, __LINE__);
     return *self;
 }
 
@@ -127,24 +131,33 @@ WebCore::AffineTransform& APS5_VABI _ZN7WebCore15AffineTransform4skewEdd(
     WebCore::AffineTransform* self, double angleX, double angleY) {
     double sx = std::tan(WebCore::Deg2Rad(angleX));
     double sy = std::tan(WebCore::Deg2Rad(angleY));
-    double a = self->m_transform[0];
-    double b = self->m_transform[1];
-    self->m_transform[0] += sy * self->m_transform[2];
-    self->m_transform[1] += sy * self->m_transform[3];
-    self->m_transform[2] += sx * a;
-    self->m_transform[3] += sx * b;
+    WebCore::AffineTransform transform{};
+    if (!GuestCopyIn_nid_no_patch(&transform, self, sizeof(transform))) NotImplementedAt_nid_no_patch(__func__, __FILE__, __LINE__);
+    double a = transform.m_transform[0];
+    double b = transform.m_transform[1];
+    transform.m_transform[0] += sy * transform.m_transform[2];
+    transform.m_transform[1] += sy * transform.m_transform[3];
+    transform.m_transform[2] += sx * a;
+    transform.m_transform[3] += sx * b;
+    if (!GuestCopyOut_nid_no_patch(self, &transform, sizeof(transform))) NotImplementedAt_nid_no_patch(__func__, __FILE__, __LINE__);
     return *self;
 }
 
 WebCore::AffineTransform& APS5_VABI _ZN7WebCore15AffineTransform5flipXEv(WebCore::AffineTransform* self) {
-    self->m_transform[0] = -self->m_transform[0];
-    self->m_transform[1] = -self->m_transform[1];
+    WebCore::AffineTransform transform{};
+    if (!GuestCopyIn_nid_no_patch(&transform, self, sizeof(transform))) NotImplementedAt_nid_no_patch(__func__, __FILE__, __LINE__);
+    transform.m_transform[0] = -transform.m_transform[0];
+    transform.m_transform[1] = -transform.m_transform[1];
+    if (!GuestCopyOut_nid_no_patch(self, &transform, sizeof(transform))) NotImplementedAt_nid_no_patch(__func__, __FILE__, __LINE__);
     return *self;
 }
 
 WebCore::AffineTransform& APS5_VABI _ZN7WebCore15AffineTransform5flipYEv(WebCore::AffineTransform* self) {
-    self->m_transform[2] = -self->m_transform[2];
-    self->m_transform[3] = -self->m_transform[3];
+    WebCore::AffineTransform transform{};
+    if (!GuestCopyIn_nid_no_patch(&transform, self, sizeof(transform))) NotImplementedAt_nid_no_patch(__func__, __FILE__, __LINE__);
+    transform.m_transform[2] = -transform.m_transform[2];
+    transform.m_transform[3] = -transform.m_transform[3];
+    if (!GuestCopyOut_nid_no_patch(self, &transform, sizeof(transform))) NotImplementedAt_nid_no_patch(__func__, __FILE__, __LINE__);
     return *self;
 }
 
@@ -159,12 +172,15 @@ WebCore::AffineTransform& APS5_VABI _ZN7WebCore15AffineTransform5scaleEd(WebCore
 
 WebCore::AffineTransform& APS5_VABI _ZN7WebCore15AffineTransform5shearEdd(
     WebCore::AffineTransform* self, double sx, double sy) {
-    double a = self->m_transform[0];
-    double b = self->m_transform[1];
-    self->m_transform[0] += sy * self->m_transform[2];
-    self->m_transform[1] += sy * self->m_transform[3];
-    self->m_transform[2] += sx * a;
-    self->m_transform[3] += sx * b;
+    WebCore::AffineTransform transform{};
+    if (!GuestCopyIn_nid_no_patch(&transform, self, sizeof(transform))) NotImplementedAt_nid_no_patch(__func__, __FILE__, __LINE__);
+    double a = transform.m_transform[0];
+    double b = transform.m_transform[1];
+    transform.m_transform[0] += sy * transform.m_transform[2];
+    transform.m_transform[1] += sy * transform.m_transform[3];
+    transform.m_transform[2] += sx * a;
+    transform.m_transform[3] += sx * b;
+    if (!GuestCopyOut_nid_no_patch(self, &transform, sizeof(transform))) NotImplementedAt_nid_no_patch(__func__, __FILE__, __LINE__);
     return *self;
 }
 
@@ -179,14 +195,20 @@ WebCore::AffineTransform& APS5_VABI _ZN7WebCore15AffineTransform6rotateEd(WebCor
 
 WebCore::AffineTransform& APS5_VABI _ZN7WebCore15AffineTransform8multiplyERKS0_(
     WebCore::AffineTransform* self, const WebCore::AffineTransform& other) {
+    WebCore::AffineTransform source{};
+    if (!GuestCopyIn_nid_no_patch(&source, &other, sizeof(source))) NotImplementedAt_nid_no_patch(__func__, __FILE__, __LINE__);
+    WebCore::AffineTransform transform{};
+    if (!GuestCopyIn_nid_no_patch(&transform, self, sizeof(transform))) NotImplementedAt_nid_no_patch(__func__, __FILE__, __LINE__);
+    const auto& m = transform.m_transform;
+    const auto& o = source.m_transform;
     WebCore::AffineTransform trans;
-    trans.m_transform[0] = other.m_transform[0] * self->m_transform[0] + other.m_transform[1] * self->m_transform[2];
-    trans.m_transform[1] = other.m_transform[0] * self->m_transform[1] + other.m_transform[1] * self->m_transform[3];
-    trans.m_transform[2] = other.m_transform[2] * self->m_transform[0] + other.m_transform[3] * self->m_transform[2];
-    trans.m_transform[3] = other.m_transform[2] * self->m_transform[1] + other.m_transform[3] * self->m_transform[3];
-    trans.m_transform[4] = other.m_transform[4] * self->m_transform[0] + other.m_transform[5] * self->m_transform[2] + self->m_transform[4];
-    trans.m_transform[5] = other.m_transform[4] * self->m_transform[1] + other.m_transform[5] * self->m_transform[3] + self->m_transform[5];
-    self->m_transform = trans.m_transform;
+    trans.m_transform[0] = o[0] * m[0] + o[1] * m[2];
+    trans.m_transform[1] = o[0] * m[1] + o[1] * m[3];
+    trans.m_transform[2] = o[2] * m[0] + o[3] * m[2];
+    trans.m_transform[3] = o[2] * m[1] + o[3] * m[3];
+    trans.m_transform[4] = o[4] * m[0] + o[5] * m[2] + m[4];
+    trans.m_transform[5] = o[4] * m[1] + o[5] * m[3] + m[5];
+    if (!GuestCopyOut_nid_no_patch(self, &trans, sizeof(trans))) NotImplementedAt_nid_no_patch(__func__, __FILE__, __LINE__);
     return *self;
 }
 
@@ -202,13 +224,16 @@ WebCore::AffineTransform& APS5_VABI _ZN7WebCore15AffineTransform9translateERKNS_
 
 WebCore::AffineTransform& APS5_VABI _ZN7WebCore15AffineTransform9translateEdd(
     WebCore::AffineTransform* self, double tx, double ty) {
-    if (WebCore::IsAffineIdentityOrTranslation(*self)) {
-        self->m_transform[4] += tx;
-        self->m_transform[5] += ty;
-        return *self;
+    WebCore::AffineTransform transform{};
+    if (!GuestCopyIn_nid_no_patch(&transform, self, sizeof(transform))) NotImplementedAt_nid_no_patch(__func__, __FILE__, __LINE__);
+    if (WebCore::IsAffineIdentityOrTranslation(transform)) {
+        transform.m_transform[4] += tx;
+        transform.m_transform[5] += ty;
+    } else {
+        transform.m_transform[4] += tx * transform.m_transform[0] + ty * transform.m_transform[2];
+        transform.m_transform[5] += tx * transform.m_transform[1] + ty * transform.m_transform[3];
     }
-    self->m_transform[4] += tx * self->m_transform[0] + ty * self->m_transform[2];
-    self->m_transform[5] += tx * self->m_transform[1] + ty * self->m_transform[3];
+    if (!GuestCopyOut_nid_no_patch(self, &transform, sizeof(transform))) NotImplementedAt_nid_no_patch(__func__, __FILE__, __LINE__);
     return *self;
 }
 
