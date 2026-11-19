@@ -725,6 +725,39 @@ void TestGuestPointers() {
     Require(BIO_free_nid_postfix(bio) == 1 && allocations == 0, "free guest pointer SSL BIO");
 }
 
+void TestDispatchGuestPointers() {
+    auto* unmappedBio = reinterpret_cast<Bio*>(0x10);
+    auto* unmappedMethod = reinterpret_cast<const BioMethod*>(0x10);
+    RequireRejected([&] { BIO_new_nid_postfix(unmappedMethod); }, "BIO_new with an unmapped method");
+    Require(allocations == 0, "rejected BIO_new allocates nothing");
+    RequireRejected([&] { BIO_free_nid_postfix(unmappedBio); }, "BIO_free of an unmapped BIO");
+    RequireRejected([&] { BIO_ctrl_nid_postfix(unmappedBio, 10, 0, nullptr); }, "BIO_ctrl on an unmapped BIO");
+    RequireRejected([&] { BIO_puts_nid_postfix(unmappedBio, "a"); }, "BIO_puts on an unmapped BIO");
+
+    Bio fake{};
+    fake.method = unmappedMethod;
+    fake.initialized = 1;
+    fake.references = 1;
+    RequireRejected([&] { BIO_ctrl_nid_postfix(&fake, 10, 0, nullptr); }, "BIO_ctrl with an unmapped method");
+    RequireRejected([&] { BIO_puts_nid_postfix(&fake, "a"); }, "BIO_puts with an unmapped method");
+    Require(fake.bytesWritten == 0 && fake.references == 1, "rejected dispatch changed the BIO");
+    fake.references = 2;
+    Require(BIO_free_nid_postfix(&fake) == 1 && fake.references == 1, "shared reference released without the method");
+
+    Bio* bio = BIO_new_nid_postfix(BIO_s_mem_nid_postfix());
+    Require(bio != nullptr, "dispatch guest pointer BIO allocation");
+    GuardedPage page;
+    char* straddling = page.Tail(reinterpret_cast<const char*>(bio), sizeof(Bio) - sizeof(void*));
+    auto* cut = reinterpret_cast<Bio*>(straddling);
+    RequireRejected([&] { BIO_ctrl_nid_postfix(cut, 10, 0, nullptr); }, "BIO_ctrl on a BIO running into an unmapped page");
+    RequireRejected([&] { BIO_puts_nid_postfix(cut, "a"); }, "BIO_puts on a BIO running into an unmapped page");
+    RequireRejected([&] { BIO_free_nid_postfix(cut); }, "BIO_free of a BIO running into an unmapped page");
+    Require(std::memcmp(straddling, bio, sizeof(Bio) - sizeof(void*)) == 0, "rejected calls changed the cut BIO");
+    RequireData(bio, "");
+    Require(BIO_puts_nid_postfix(bio, "ok") == 2 && bio->bytesWritten == 2, "puts after rejected calls");
+    Require(BIO_free_nid_postfix(bio) == 1, "free dispatch guest pointer BIO");
+}
+
 void TestPkcs12BioReadErrors() {
     constexpr std::uint64_t bioUnsupported = 0x20fff079;
     constexpr std::uint64_t notEnoughData = 0x0dfff08e;
@@ -1321,6 +1354,7 @@ int main(int argc, char** argv) {
 #ifndef ANYPS5_BIO_DYNAMIC
     TestSslMethod();
     TestGuestPointers();
+    TestDispatchGuestPointers();
     TestPkcs12BioReadErrors();
     TestPemReadBioX509NoStartLine();
     TestFileAndSocket();

@@ -89,6 +89,31 @@ bool CopyGuestStringPreservingErrno(const char* source, std::string& destination
     }
 }
 
+template <typename T>
+T ReadGuest(const T* source, const char* function) {
+    T value{};
+    if (!CopyGuestInPreservingErrno(&value, source, sizeof(T))) NotImplementedAt_nid_no_patch(function, __FILE__, __LINE__);
+    return value;
+}
+
+template <typename TField>
+TField ReadField(const Bio* bio, TField Bio::* field, const char* function) {
+    return ReadGuest(&(bio->*field), function);
+}
+
+template <typename TField>
+void WriteField(Bio* bio, TField Bio::* field, const TField& value, const char* function) {
+    if (!CopyGuestOutPreservingErrno(&(bio->*field), &value, sizeof(TField))) NotImplementedAt_nid_no_patch(function, __FILE__, __LINE__);
+}
+
+int ReleaseReference(Bio* bio, const char* function) {
+    const int savedErrno = errno;
+    const bool writable = GuestWritable_nid_no_patch(&bio->references, sizeof(bio->references));
+    errno = savedErrno;
+    if (!writable) NotImplementedAt_nid_no_patch(function, __FILE__, __LINE__);
+    return std::atomic_ref(bio->references).fetch_sub(1);
+}
+
 void clearBuffer(BioBuffer& buffer) {
     auto* bytes = reinterpret_cast<volatile unsigned char*>(buffer.data);
     for (std::size_t i = 0; i < buffer.capacity; ++i) bytes[i] = 0;
@@ -351,6 +376,7 @@ const LibreSsl::BioMethod* APS5_VABI BIO_f_ssl_nid_postfix() {
 
 LibreSsl::Bio* APS5_VABI BIO_new_nid_postfix(const LibreSsl::BioMethod* method) {
     if (!method) throw std::invalid_argument("BIO_new: null method");
+    const BioMethod record = ReadGuest(method, __func__);
     auto* bio = static_cast<Bio*>(calloc_nid_postfix(1, sizeof(Bio)));
     if (!bio) {
         queueError(BioLibrary, AllocationFailure, 0);
@@ -360,7 +386,7 @@ LibreSsl::Bio* APS5_VABI BIO_new_nid_postfix(const LibreSsl::BioMethod* method) 
     bio->shutdown = 1;
     bio->references = 1;
     try {
-        if (!method->create || method->create(bio)) return bio;
+        if (!record.create || record.create(bio)) return bio;
     } catch (...) {
         free_nid_postfix(bio);
         throw;
@@ -393,27 +419,32 @@ LibreSsl::Bio* APS5_VABI BIO_new_mem_buf_nid_postfix(const void* source, int siz
 
 int APS5_VABI BIO_free_nid_postfix(LibreSsl::Bio* bio) {
     if (!bio) return 0;
-    if (bio->extraData) NotImplemented_nid_no_patch(__func__);
-    if (std::atomic_ref(bio->references).fetch_sub(1) > 1) return 1;
-    if (bio->callback) {
-        const int result = static_cast<int>(bio->callback(bio, 1, nullptr, 0, 0, 1));
+    if (ReadGuest(bio, __func__).extraData) NotImplemented_nid_no_patch(__func__);
+    if (ReleaseReference(bio, __func__) > 1) return 1;
+    if (const auto callback = ReadField(bio, &Bio::callback, __func__)) {
+        const int result = static_cast<int>(callback(bio, 1, nullptr, 0, 0, 1));
         if (result <= 0) return result;
     }
-    if (bio->extraData) NotImplemented_nid_no_patch(__func__);
-    if (bio->method && bio->method->destroy) bio->method->destroy(bio);
+    const Bio record = ReadGuest(bio, __func__);
+    if (record.extraData) NotImplemented_nid_no_patch(__func__);
+    if (record.method) {
+        if (const auto destroy = ReadGuest(record.method, __func__).destroy) destroy(bio);
+    }
     free_nid_postfix(bio);
     return 1;
 }
 
 std::int64_t APS5_VABI BIO_ctrl_nid_postfix(LibreSsl::Bio* bio, int command, std::int64_t argument, void* pointer) {
     if (!bio) return 0;
-    if (!bio->method || !bio->method->control) return queueError(BioLibrary, UnsupportedMethod, -2);
-    const auto callback = bio->callback;
+    const Bio record = ReadGuest(bio, __func__);
+    const auto control = record.method ? ReadGuest(record.method, __func__).control : nullptr;
+    if (!control) return queueError(BioLibrary, UnsupportedMethod, -2);
+    const auto callback = record.callback;
     if (callback) {
         const auto result = callback(bio, 6, static_cast<const char*>(pointer), command, argument, 1);
         if (result <= 0) return result;
     }
-    const auto result = bio->method->control(bio, command, argument, pointer);
+    const auto result = control(bio, command, argument, pointer);
     return callback ? callback(bio, 0x86, static_cast<const char*>(pointer), command, argument, result) : result;
 }
 
@@ -432,15 +463,20 @@ int LibreSslBioWrite_nid_no_patch(LibreSsl::Bio* bio, const void* source, int si
 }
 
 int APS5_VABI BIO_puts_nid_postfix(LibreSsl::Bio* bio, const char* source) {
-    if (!bio || !bio->method || !bio->method->puts) return queueError(BioLibrary, UnsupportedMethod, -2);
-    const auto callback = bio->callback;
+    const Bio record = bio ? ReadGuest(bio, __func__) : Bio{};
+    const auto puts = record.method ? ReadGuest(record.method, __func__).puts : nullptr;
+    if (!puts) return queueError(BioLibrary, UnsupportedMethod, -2);
+    const auto callback = record.callback;
     if (callback) {
         const int result = static_cast<int>(callback(bio, 4, source, 0, 0, 1));
         if (result <= 0) return result;
     }
-    if (!bio->initialized) return queueError(BioLibrary, Uninitialized, -2);
-    const int result = bio->method->puts(bio, source);
-    if (result > 0) bio->bytesWritten += static_cast<std::uint64_t>(result);
+    if (!ReadField(bio, &Bio::initialized, __func__)) return queueError(BioLibrary, Uninitialized, -2);
+    const int result = puts(bio, source);
+    if (result > 0) {
+        const auto written = ReadField(bio, &Bio::bytesWritten, __func__) + static_cast<std::uint64_t>(result);
+        WriteField(bio, &Bio::bytesWritten, written, __func__);
+    }
     return callback ? static_cast<int>(callback(bio, 0x84, source, 0, 0, result)) : result;
 }
 
