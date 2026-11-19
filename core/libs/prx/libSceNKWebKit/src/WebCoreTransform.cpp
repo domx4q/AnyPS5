@@ -340,16 +340,19 @@ WebCore::IntPoint APS5_VABI _ZNK7WebCore15AffineTransform8mapPointERKNS_8IntPoin
 }
 
 void APS5_VABI _ZN7WebCore20TransformationMatrix10makeAffineEv(WebCore::TransformationMatrix* self) {
-    self->m_matrix[0][2] = 0.0;
-    self->m_matrix[0][3] = 0.0;
-    self->m_matrix[1][2] = 0.0;
-    self->m_matrix[1][3] = 0.0;
-    self->m_matrix[2][0] = 0.0;
-    self->m_matrix[2][1] = 0.0;
-    self->m_matrix[2][2] = 1.0;
-    self->m_matrix[2][3] = 0.0;
-    self->m_matrix[3][2] = 0.0;
-    self->m_matrix[3][3] = 1.0;
+    WebCore::TransformationMatrix matrix{};
+    if (!GuestCopyIn_nid_no_patch(&matrix, self, sizeof(matrix))) NotImplementedAt_nid_no_patch(__func__, __FILE__, __LINE__);
+    matrix.m_matrix[0][2] = 0.0;
+    matrix.m_matrix[0][3] = 0.0;
+    matrix.m_matrix[1][2] = 0.0;
+    matrix.m_matrix[1][3] = 0.0;
+    matrix.m_matrix[2][0] = 0.0;
+    matrix.m_matrix[2][1] = 0.0;
+    matrix.m_matrix[2][2] = 1.0;
+    matrix.m_matrix[2][3] = 0.0;
+    matrix.m_matrix[3][2] = 0.0;
+    matrix.m_matrix[3][3] = 1.0;
+    if (!GuestCopyOut_nid_no_patch(self, &matrix, sizeof(matrix))) NotImplementedAt_nid_no_patch(__func__, __FILE__, __LINE__);
 }
 
 WebCore::TransformationMatrix APS5_VABI _ZN7WebCore20TransformationMatrix10rectToRectERKNS_9FloatRectES3_(
@@ -376,24 +379,30 @@ WebCore::TransformationMatrix APS5_VABI _ZN7WebCore20TransformationMatrix10rectT
 
 WebCore::TransformationMatrix& APS5_VABI _ZN7WebCore20TransformationMatrix11translate3dEddd(
     WebCore::TransformationMatrix* self, double tx, double ty, double tz) {
-    self->m_matrix[3][0] += tx * self->m_matrix[0][0] + ty * self->m_matrix[1][0] + tz * self->m_matrix[2][0];
-    self->m_matrix[3][1] += tx * self->m_matrix[0][1] + ty * self->m_matrix[1][1] + tz * self->m_matrix[2][1];
-    self->m_matrix[3][2] += tx * self->m_matrix[0][2] + ty * self->m_matrix[1][2] + tz * self->m_matrix[2][2];
-    self->m_matrix[3][3] += tx * self->m_matrix[0][3] + ty * self->m_matrix[1][3] + tz * self->m_matrix[2][3];
+    WebCore::TransformationMatrix matrix{};
+    if (!GuestCopyIn_nid_no_patch(&matrix, self, sizeof(matrix))) NotImplementedAt_nid_no_patch(__func__, __FILE__, __LINE__);
+    matrix.m_matrix[3][0] += tx * matrix.m_matrix[0][0] + ty * matrix.m_matrix[1][0] + tz * matrix.m_matrix[2][0];
+    matrix.m_matrix[3][1] += tx * matrix.m_matrix[0][1] + ty * matrix.m_matrix[1][1] + tz * matrix.m_matrix[2][1];
+    matrix.m_matrix[3][2] += tx * matrix.m_matrix[0][2] + ty * matrix.m_matrix[1][2] + tz * matrix.m_matrix[2][2];
+    matrix.m_matrix[3][3] += tx * matrix.m_matrix[0][3] + ty * matrix.m_matrix[1][3] + tz * matrix.m_matrix[2][3];
+    if (!GuestCopyOut_nid_no_patch(self, &matrix, sizeof(matrix))) NotImplementedAt_nid_no_patch(__func__, __FILE__, __LINE__);
     return *self;
 }
 
 WebCore::TransformationMatrix& APS5_VABI _ZN7WebCore20TransformationMatrix15scaleNonUniformEdd(
     WebCore::TransformationMatrix* self, double sx, double sy) {
-    self->m_matrix[0][0] *= sx;
-    self->m_matrix[0][1] *= sx;
-    self->m_matrix[0][2] *= sx;
-    self->m_matrix[0][3] *= sx;
+    WebCore::TransformationMatrix matrix{};
+    if (!GuestCopyIn_nid_no_patch(&matrix, self, sizeof(matrix))) NotImplementedAt_nid_no_patch(__func__, __FILE__, __LINE__);
+    matrix.m_matrix[0][0] *= sx;
+    matrix.m_matrix[0][1] *= sx;
+    matrix.m_matrix[0][2] *= sx;
+    matrix.m_matrix[0][3] *= sx;
 
-    self->m_matrix[1][0] *= sy;
-    self->m_matrix[1][1] *= sy;
-    self->m_matrix[1][2] *= sy;
-    self->m_matrix[1][3] *= sy;
+    matrix.m_matrix[1][0] *= sy;
+    matrix.m_matrix[1][1] *= sy;
+    matrix.m_matrix[1][2] *= sy;
+    matrix.m_matrix[1][3] *= sy;
+    if (!GuestCopyOut_nid_no_patch(self, &matrix, sizeof(matrix))) NotImplementedAt_nid_no_patch(__func__, __FILE__, __LINE__);
     return *self;
 }
 
@@ -426,21 +435,26 @@ WebCore::TransformationMatrix& APS5_VABI _ZN7WebCore20TransformationMatrix6rotat
 }
 
 WebCore::TransformationMatrix& APS5_VABI _ZN7WebCore20TransformationMatrix8multiplyERKS0_(
-    WebCore::TransformationMatrix* self, const WebCore::TransformationMatrix& mat) {
+    WebCore::TransformationMatrix* self, const WebCore::TransformationMatrix& guestMatrix) {
+    WebCore::TransformationMatrix mat{};
+    if (!GuestCopyIn_nid_no_patch(&mat, &guestMatrix, sizeof(mat))) NotImplementedAt_nid_no_patch(__func__, __FILE__, __LINE__);
+    WebCore::TransformationMatrix matrix{};
+    if (!GuestCopyIn_nid_no_patch(&matrix, self, sizeof(matrix))) NotImplementedAt_nid_no_patch(__func__, __FILE__, __LINE__);
     double result[4][4];
     for (int i = 0; i < 4; ++i) {
         for (int j = 0; j < 4; ++j) {
-            result[i][j] = mat.m_matrix[i][0] * self->m_matrix[0][j]
-                         + mat.m_matrix[i][1] * self->m_matrix[1][j]
-                         + mat.m_matrix[i][2] * self->m_matrix[2][j]
-                         + mat.m_matrix[i][3] * self->m_matrix[3][j];
+            result[i][j] = mat.m_matrix[i][0] * matrix.m_matrix[0][j]
+                         + mat.m_matrix[i][1] * matrix.m_matrix[1][j]
+                         + mat.m_matrix[i][2] * matrix.m_matrix[2][j]
+                         + mat.m_matrix[i][3] * matrix.m_matrix[3][j];
         }
     }
     for (int i = 0; i < 4; ++i) {
         for (int j = 0; j < 4; ++j) {
-            self->m_matrix[i][j] = result[i][j];
+            matrix.m_matrix[i][j] = result[i][j];
         }
     }
+    if (!GuestCopyOut_nid_no_patch(self, &matrix, sizeof(matrix))) NotImplementedAt_nid_no_patch(__func__, __FILE__, __LINE__);
     return *self;
 }
 
@@ -492,23 +506,27 @@ WebCore::TransformationMatrix& APS5_VABI _ZN7WebCore20TransformationMatrix9trans
 }
 
 void APS5_VABI _ZN7WebCore20TransformationMatrixC1ERKNS_15AffineTransformE(
-    WebCore::TransformationMatrix* self, const WebCore::AffineTransform& t) {
-    self->m_matrix[0][0] = t.m_transform[0];
-    self->m_matrix[0][1] = t.m_transform[1];
-    self->m_matrix[0][2] = 0.0;
-    self->m_matrix[0][3] = 0.0;
-    self->m_matrix[1][0] = t.m_transform[2];
-    self->m_matrix[1][1] = t.m_transform[3];
-    self->m_matrix[1][2] = 0.0;
-    self->m_matrix[1][3] = 0.0;
-    self->m_matrix[2][0] = 0.0;
-    self->m_matrix[2][1] = 0.0;
-    self->m_matrix[2][2] = 1.0;
-    self->m_matrix[2][3] = 0.0;
-    self->m_matrix[3][0] = t.m_transform[4];
-    self->m_matrix[3][1] = t.m_transform[5];
-    self->m_matrix[3][2] = 0.0;
-    self->m_matrix[3][3] = 1.0;
+    WebCore::TransformationMatrix* self, const WebCore::AffineTransform& guestTransform) {
+    WebCore::AffineTransform t{};
+    if (!GuestCopyIn_nid_no_patch(&t, &guestTransform, sizeof(t))) NotImplementedAt_nid_no_patch(__func__, __FILE__, __LINE__);
+    WebCore::TransformationMatrix matrix;
+    matrix.m_matrix[0][0] = t.m_transform[0];
+    matrix.m_matrix[0][1] = t.m_transform[1];
+    matrix.m_matrix[0][2] = 0.0;
+    matrix.m_matrix[0][3] = 0.0;
+    matrix.m_matrix[1][0] = t.m_transform[2];
+    matrix.m_matrix[1][1] = t.m_transform[3];
+    matrix.m_matrix[1][2] = 0.0;
+    matrix.m_matrix[1][3] = 0.0;
+    matrix.m_matrix[2][0] = 0.0;
+    matrix.m_matrix[2][1] = 0.0;
+    matrix.m_matrix[2][2] = 1.0;
+    matrix.m_matrix[2][3] = 0.0;
+    matrix.m_matrix[3][0] = t.m_transform[4];
+    matrix.m_matrix[3][1] = t.m_transform[5];
+    matrix.m_matrix[3][2] = 0.0;
+    matrix.m_matrix[3][3] = 1.0;
+    if (!GuestCopyOut_nid_no_patch(self, &matrix, sizeof(matrix))) NotImplementedAt_nid_no_patch(__func__, __FILE__, __LINE__);
 }
 
 void APS5_VABI _ZN7WebCore20TransformationMatrixC2ERKNS_15AffineTransformE(
