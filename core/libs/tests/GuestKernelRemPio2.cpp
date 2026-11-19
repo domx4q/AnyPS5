@@ -7,6 +7,12 @@
 #include <cstdlib>
 #include <limits>
 #include <stdexcept>
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
 
 namespace {
 
@@ -95,6 +101,85 @@ bool Throws(const std::array<double, 5>& chunks, int e0, int nx, int prec) {
     return false;
 }
 
+class GuardedPage {
+public:
+    GuardedPage() {
+#ifdef _WIN32
+        SYSTEM_INFO info{};
+        GetSystemInfo(&info);
+        size = info.dwPageSize;
+        allocation = static_cast<unsigned char*>(VirtualAlloc(nullptr, size * 2, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
+        Require(allocation != nullptr, "guarded page allocation", 0);
+        DWORD previous = 0;
+        Require(VirtualProtect(allocation + size, size, PAGE_NOACCESS, &previous) != 0, "guarded page guard", 0);
+#else
+        size = static_cast<std::size_t>(sysconf(_SC_PAGESIZE));
+        void* mapping = mmap(nullptr, size * 2, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        Require(mapping != MAP_FAILED, "guarded page allocation", 0);
+        allocation = static_cast<unsigned char*>(mapping);
+        Require(mprotect(allocation + size, size, PROT_NONE) == 0, "guarded page guard", 0);
+#endif
+    }
+    GuardedPage(const GuardedPage&) = delete;
+    GuardedPage& operator=(const GuardedPage&) = delete;
+    ~GuardedPage() {
+#ifdef _WIN32
+        VirtualFree(allocation, 0, MEM_RELEASE);
+#else
+        munmap(allocation, size * 2);
+#endif
+    }
+    double* Last(std::size_t count) const { return reinterpret_cast<double*>(allocation + size) - count; }
+    void ReadOnly() {
+#ifdef _WIN32
+        DWORD previous = 0;
+        Require(VirtualProtect(allocation, size, PAGE_READONLY, &previous) != 0, "read-only page", 0);
+#else
+        Require(mprotect(allocation, size, PROT_READ) == 0, "read-only page", 0);
+#endif
+    }
+
+private:
+    unsigned char* allocation = nullptr;
+    std::size_t size = 0;
+};
+
+bool RejectsPointers(double* x, double* y, int nx, int prec) {
+    try {
+        __kernel_rem_pio2_nid_postfix(x, y, 100, nx, prec);
+    } catch (const std::invalid_argument&) {
+        return true;
+    }
+    return false;
+}
+
+void CheckGuestPointers() {
+    auto* const unmapped = reinterpret_cast<double*>(std::uintptr_t{0x10});
+    double x[2] = {std::bit_cast<double>(0x416f400000000000ull), 0.0};
+    double y[3] = {};
+    Require(RejectsPointers(unmapped, y, 1, 1), "unmapped input", 0);
+    Require(RejectsPointers(x, unmapped, 1, 1), "unmapped output", 0);
+    __kernel_rem_pio2_nid_postfix(x, y, 100, 1, 0);
+    const double expected = y[0];
+
+    GuardedPage page;
+    double* const lastInput = page.Last(1);
+    *lastInput = x[0];
+    Require(RejectsPointers(lastInput, y, 2, 0), "input chunks past a guard page", 0);
+    double single = 0.0;
+    __kernel_rem_pio2_nid_postfix(lastInput, &single, 100, 1, 0);
+    Require(std::bit_cast<std::uint64_t>(single) == std::bit_cast<std::uint64_t>(expected), "one input chunk before a guard page", 0);
+    double* const lastOutput = page.Last(1);
+    __kernel_rem_pio2_nid_postfix(x, lastOutput, 100, 1, 0);
+    Require(std::bit_cast<std::uint64_t>(*lastOutput) == std::bit_cast<std::uint64_t>(expected), "one output term before a guard page", 0);
+    Require(RejectsPointers(x, lastOutput, 1, 1), "two output terms past a guard page", 0);
+    double* const outputs = page.Last(3);
+    outputs[0] = outputs[1] = outputs[2] = std::bit_cast<double>(Unwritten);
+    page.ReadOnly();
+    Require(RejectsPointers(x, outputs, 1, 3), "read-only output", 0);
+    for (int i = 0; i < 3; ++i) Require(std::bit_cast<std::uint64_t>(outputs[i]) == Unwritten, "read-only output stays unwritten", i);
+}
+
 }
 
 int main() {
@@ -141,6 +226,7 @@ int main() {
         threw = true;
     }
     Require(threw, "null output", row);
+    CheckGuestPointers();
     std::puts("__kernel_rem_pio2: ok");
     return 0;
 }

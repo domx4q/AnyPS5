@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
+#include <stdexcept>
 #include "prx/libc/include/Api.hpp"
 #include "prx/libkernel/include/Api.hpp"
 #include <cstring>
@@ -209,6 +210,15 @@ static void TestTtotm() {
 static void TestXpGetw() {
     const float one[] = {5.0f, 7.0f, 11.0f, 13.0f};
     Require(_FXp_getw_nid_postfix(one, 0) == 0.0f, "no parts sum to 0");
+    const auto* const unmapped = reinterpret_cast<const float*>(std::uintptr_t{0x10});
+    Require(_FXp_getw_nid_postfix(unmapped, 0) == 0.0f, "no parts read nothing");
+    bool rejected = false;
+    try {
+        _FXp_getw_nid_postfix(unmapped, 3);
+    } catch (const std::invalid_argument&) {
+        rejected = true;
+    }
+    Require(rejected, "unreadable parts are rejected");
     Require(_FXp_getw_nid_postfix(one, 1) == 5.0f, "one part is returned as it is");
     const float zeroHead[] = {0.0f, 7.0f, 11.0f};
     Require(_FXp_getw_nid_postfix(zeroHead, 3) == 0.0f, "a zero first part ends the sum");

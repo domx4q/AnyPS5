@@ -740,8 +740,11 @@ int APS5_VABI _FTgamma_nid_postfix() {
     return 0;
 }
 
-float APS5_VABI _FXp_getw_nid_postfix(const float* parts, int count) {
+float APS5_VABI _FXp_getw_nid_postfix(const float* guestParts, int count) {
     if (count == 0) return 0.0f;
+    float parts[4]{};
+    const std::size_t read = count >= 4 ? 4 : count < 0 ? 3 : static_cast<std::size_t>(count);
+    if (!GuestCopyIn_nid_no_patch(parts, guestParts, read * sizeof(float))) throw std::invalid_argument("_FXp_getw: unreadable parts");
     if (count == 1 || parts[0] == 0.0f || parts[1] == 0.0f) return parts[0];
     if (count == 2 || parts[2] == 0.0f) return parts[0] + parts[1];
     const float head = parts[0] + parts[1];

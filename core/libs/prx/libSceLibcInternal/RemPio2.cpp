@@ -10,6 +10,7 @@
  * ====================================================
  */
 #include "prx/libSceLibcInternal/include/Api.hpp"
+#include "prx/libc/include/General.hpp"
 #include "prx/libc/include/general/RemPio2Table.hpp"
 #include "prx/libc/include/general/VabiMacros.hpp"
 #include <array>
@@ -52,11 +53,14 @@ std::int32_t ToInt32(double value) {
 
 extern "C" {
 
-int APS5_VABI __kernel_rem_pio2_nid_postfix(double* x, double* y, int e0, int nx, int prec) {
-    if (x == nullptr || y == nullptr) throw std::invalid_argument("__kernel_rem_pio2: null x or y");
+int APS5_VABI __kernel_rem_pio2_nid_postfix(double* guestX, double* guestY, int e0, int nx, int prec) {
+    if (guestX == nullptr || guestY == nullptr) throw std::invalid_argument("__kernel_rem_pio2: null x or y");
     if (prec < 0 || prec > 3) throw std::invalid_argument("__kernel_rem_pio2: precision " + std::to_string(prec) + " is not 0 to 3");
     if (nx < 1 || nx > Terms - InitJk[prec]) throw std::invalid_argument("__kernel_rem_pio2: " + std::to_string(nx) + " input chunks do not fit the 20-term work arrays");
     if (e0 < std::numeric_limits<std::int32_t>::min() + 24 * (Terms + 3)) throw std::invalid_argument("__kernel_rem_pio2: exponent " + std::to_string(e0) + " overflows the reduction's exponent arithmetic");
+    std::array<double, Terms> x{};
+    if (!GuestCopyIn_nid_no_patch(x.data(), guestX, static_cast<std::size_t>(nx) * sizeof(double))) throw std::invalid_argument("__kernel_rem_pio2: unreadable x");
+    double y[3]{};
     const double zero = 0.0, one = 1.0, two24 = 1.67772160000000000000e+07, twon24 = 5.96046447753906250000e-08;
     std::int32_t jz, jx, jv, jp, jk, carry, n, i, j, k, m, q0, ih;
     std::array<std::int32_t, Terms> iq{};
@@ -205,6 +209,8 @@ recompute:
             }
             break;
     }
+    const std::size_t written = prec == 0 ? 1 : prec == 3 ? 3 : 2;
+    if (!GuestCopyOut_nid_no_patch(guestY, y, written * sizeof(double))) throw std::invalid_argument("__kernel_rem_pio2: unwritable y");
     return n & 7;
 }
 
