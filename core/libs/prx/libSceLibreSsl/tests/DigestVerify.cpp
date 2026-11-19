@@ -4,6 +4,7 @@
 #include "prx/libc/include/ApplicationHeap.hpp"
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -12,6 +13,18 @@
 #include <initializer_list>
 #include <stdexcept>
 #include <vector>
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
 
 namespace {
 
@@ -289,6 +302,68 @@ void MissingOrForeignState(const Key& key) {
     Require(References(key) == 1, "the failures leave one key reference");
 }
 
+template<typename TAction>
+void RequireRejectedPreservingErrno(TAction action, const char* message) {
+    errno = 71;
+    bool rejected = false;
+    try {
+        action();
+    } catch (const std::exception&) {
+        rejected = errno == 71;
+    }
+    Require(rejected, message);
+}
+
+void GuestPointers(const Key& key) {
+    ERR_clear_error_nid_postfix();
+    auto* const unmapped = reinterpret_cast<EvpMdContext*>(std::uintptr_t{0x10});
+    RequireRejectedPreservingErrno([&] { EVP_DigestVerifyInit_nid_postfix(unmapped, nullptr, EVP_sha256_nid_postfix(), nullptr, key.pkey); },
+        "an unmapped digest context is rejected by the initialization");
+    RequireRejectedPreservingErrno([&] { EVP_DigestVerifyFinal_nid_postfix(unmapped, nullptr, 0); },
+        "an unmapped digest context is rejected by the final step");
+    Require(References(key) == 1, "an unmapped digest context takes no key reference");
+
+    EvpMdContext context {};
+    EVP_MD_CTX_init_nid_postfix(&context);
+    void** const unmappedOutput = reinterpret_cast<void**>(std::uintptr_t{0x10});
+    RequireRejectedPreservingErrno([&] { EVP_DigestVerifyInit_nid_postfix(&context, unmappedOutput, EVP_sha256_nid_postfix(), nullptr, key.pkey); },
+        "an unmapped key context output is rejected");
+    Require(EVP_MD_CTX_cleanup_nid_postfix(&context) == 1, "the context is cleaned after the rejected output");
+    Require(References(key) == 1, "the cleanup releases the key reference of the rejected output");
+
+#ifdef _WIN32
+    SYSTEM_INFO info {};
+    GetSystemInfo(&info);
+    const std::size_t pageSize = info.dwPageSize;
+    void* page = VirtualAlloc(nullptr, pageSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    Require(page != nullptr, "a page is allocated");
+#else
+    const std::size_t pageSize = static_cast<std::size_t>(sysconf(_SC_PAGESIZE));
+    void* page = mmap(nullptr, pageSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    Require(page != MAP_FAILED, "a page is mapped");
+#endif
+    auto* const readOnly = static_cast<EvpMdContext*>(page);
+    EVP_MD_CTX_init_nid_postfix(readOnly);
+    EvpMdContext snapshot {};
+    std::memcpy(&snapshot, readOnly, sizeof(snapshot));
+#ifdef _WIN32
+    DWORD previous = 0;
+    Require(VirtualProtect(page, pageSize, PAGE_READONLY, &previous) != 0, "the page is made read-only");
+#else
+    Require(mprotect(page, pageSize, PROT_READ) == 0, "the page is made read-only");
+#endif
+    RequireRejectedPreservingErrno([&] { EVP_DigestVerifyInit_nid_postfix(readOnly, nullptr, EVP_sha256_nid_postfix(), nullptr, key.pkey); },
+        "a read-only digest context without a key context is rejected");
+    Require(std::memcmp(readOnly, &snapshot, sizeof(snapshot)) == 0, "the read-only digest context is unchanged");
+    Require(References(key) == 1, "the read-only digest context takes no key reference");
+#ifdef _WIN32
+    Require(VirtualFree(page, 0, MEM_RELEASE) != 0, "the page is released");
+#else
+    Require(munmap(page, pageSize) == 0, "the page is unmapped");
+#endif
+    RequireErrors({}, "the rejected guest pointers queue no error");
+}
+
 void CopyAndCleanup(const Key& key) {
     ERR_clear_error_nid_postfix();
     auto signature = Bytes(Sha384Signature);
@@ -419,6 +494,7 @@ int main(int argc, char** argv) {
     CorruptSignatures(key);
     UninitializedDigest(key);
     MissingOrForeignState(key);
+    GuestPointers(key);
     CopyAndCleanup(key);
     ReleaseKey(key);
     return 0;

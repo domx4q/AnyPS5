@@ -3,6 +3,7 @@
 #include "prx/libSceLibreSsl/include/Evp.hpp"
 #include "prx/libSceLibreSsl/include/PkeyContext.hpp"
 #include <atomic>
+#include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -331,6 +332,29 @@ const EvpMd* DefaultDigest(const PkeyContext& context) {
     return &Sha1;
 }
 
+template <typename T>
+void CopyGuestInPreservingErrno(const void* guestAddress, T& hostValue, const char* caller) {
+    const int savedErrno = errno;
+    const bool ok = GuestCopyIn_nid_no_patch(&hostValue, guestAddress, sizeof(T));
+    errno = savedErrno;
+    if (!ok) NotImplementedAt_nid_no_patch(caller, __FILE__, __LINE__);
+}
+
+void RequireGuestWritablePreservingErrno(void* guestAddress, std::size_t bytes, const char* caller) {
+    const int savedErrno = errno;
+    const bool ok = GuestWritable_nid_no_patch(guestAddress, bytes);
+    errno = savedErrno;
+    if (!ok) NotImplementedAt_nid_no_patch(caller, __FILE__, __LINE__);
+}
+
+template <typename T>
+void CopyGuestOutPreservingErrno(void* guestAddress, const T& hostValue, const char* caller) {
+    const int savedErrno = errno;
+    const bool ok = GuestCopyOut_nid_no_patch(guestAddress, &hostValue, sizeof(T));
+    errno = savedErrno;
+    if (!ok) NotImplementedAt_nid_no_patch(caller, __FILE__, __LINE__);
+}
+
 } // namespace
 
 extern "C" {
@@ -353,13 +377,18 @@ int PkeyContextControl_nid_no_patch(PkeyContext* context, int keyType, int opera
 
 int APS5_VABI EVP_DigestVerifyInit_nid_postfix(EvpMdContext* context, void** pctx, const EvpMd* type, void* engine, void* pkey) {
     if (!context) throw std::invalid_argument(std::string(__func__) + ": null digest context");
-    if (!context->pkeyContext && !pkey) return 0;
+    EvpMdContext local {};
+    CopyGuestInPreservingErrno(context, local, __func__);
+    if (!local.pkeyContext && !pkey) return 0;
     if (engine) NotImplemented_nid_no_patch((std::string(__func__) + ": ENGINE").c_str());
-    if (!context->pkeyContext) {
-        context->pkeyContext = NewContext(pkey, nullptr);
-        if (!context->pkeyContext) return 0;
+    if (!local.pkeyContext) {
+        void* const slot = reinterpret_cast<std::byte*>(context) + offsetof(EvpMdContext, pkeyContext);
+        RequireGuestWritablePreservingErrno(slot, sizeof(local.pkeyContext), __func__);
+        local.pkeyContext = NewContext(pkey, nullptr);
+        if (!local.pkeyContext) return 0;
+        CopyGuestOutPreservingErrno(slot, local.pkeyContext, __func__);
     }
-    auto* pkeyContext = static_cast<PkeyContext*>(context->pkeyContext);
+    auto* pkeyContext = static_cast<PkeyContext*>(local.pkeyContext);
     RequireOurMethod(*pkeyContext, __func__);
     const auto* method = pkeyContext->method;
     const EvpMd* digest = type;
@@ -385,7 +414,7 @@ int APS5_VABI EVP_DigestVerifyInit_nid_postfix(EvpMdContext* context, void** pct
         }
     }
     if (ControlContext(pkeyContext, -1, OperationTypeSign, ControlMd, 0, const_cast<EvpMd*>(digest)) <= 0) return 0;
-    if (pctx) *pctx = pkeyContext;
+    if (pctx) CopyGuestOutPreservingErrno(pctx, static_cast<void*>(pkeyContext), __func__);
     if (!EVP_DigestInit_ex_nid_postfix(context, digest, nullptr)) return 0;
     const int digestInit = ControlContext(pkeyContext, -1, OperationTypeSign, ControlDigestInit, 0, context);
     if (digestInit <= 0 && digestInit != -2) return 0;
@@ -393,11 +422,14 @@ int APS5_VABI EVP_DigestVerifyInit_nid_postfix(EvpMdContext* context, void** pct
 }
 
 int APS5_VABI EVP_DigestVerifyFinal_nid_postfix(EvpMdContext* context, unsigned char* signature, std::size_t signatureLength) {
-    if (!context || !context->pkeyContext) NotImplemented_nid_no_patch(__func__);
-    auto* pkeyContext = static_cast<PkeyContext*>(context->pkeyContext);
+    if (!context) NotImplemented_nid_no_patch(__func__);
+    EvpMdContext local {};
+    CopyGuestInPreservingErrno(context, local, __func__);
+    if (!local.pkeyContext) NotImplemented_nid_no_patch(__func__);
+    auto* pkeyContext = static_cast<PkeyContext*>(local.pkeyContext);
     RequireOurMethod(*pkeyContext, __func__);
     EvpMdContext copy {};
-    if (!CopyContext_nid_no_patch(copy, *context, __func__)) return -1;
+    if (!CopyContext_nid_no_patch(copy, local, __func__)) return -1;
     unsigned char digest[MaxDigestSize];
     std::uint32_t digestLength = 0;
     const int finalized = EVP_DigestFinal_ex_nid_postfix(&copy, digest, &digestLength);
