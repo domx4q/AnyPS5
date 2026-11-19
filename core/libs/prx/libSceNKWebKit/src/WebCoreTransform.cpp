@@ -42,6 +42,14 @@ bool IsAffineIdentityOrTranslation(const AffineTransform& t) {
         && t.m_transform[2] == 0.0 && t.m_transform[3] == 1.0;
 }
 
+FloatPoint MapAffinePoint(const AffineTransform& t, const FloatPoint& point) {
+    double x = static_cast<double>(point.m_x);
+    double y = static_cast<double>(point.m_y);
+    double x2 = t.m_transform[0] * x + t.m_transform[2] * y + t.m_transform[4];
+    double y2 = t.m_transform[1] * x + t.m_transform[3] * y + t.m_transform[5];
+    return FloatPoint{static_cast<float>(x2), static_cast<float>(y2)};
+}
+
 enum class MatrixType : std::uint8_t {
     IdentityOrTranslation,
     Affine,
@@ -213,46 +221,58 @@ WebCore::AffineTransform& APS5_VABI _ZN7WebCore15AffineTransform9translateEdd(
 }
 
 bool APS5_VABI _ZNK7WebCore15AffineTransform10isIdentityEv(const WebCore::AffineTransform* self) {
-    return self->m_transform[0] == 1.0 && self->m_transform[1] == 0.0
-        && self->m_transform[2] == 0.0 && self->m_transform[3] == 1.0
-        && self->m_transform[4] == 0.0 && self->m_transform[5] == 0.0;
+    WebCore::AffineTransform transform{};
+    if (!GuestCopyIn_nid_no_patch(&transform, self, sizeof(transform))) NotImplementedAt_nid_no_patch(__func__, __FILE__, __LINE__);
+    const auto& m = transform.m_transform;
+    return m[0] == 1.0 && m[1] == 0.0 && m[2] == 0.0 && m[3] == 1.0 && m[4] == 0.0 && m[5] == 0.0;
 }
 
 WebCore::TransformationMatrix APS5_VABI _ZNK7WebCore15AffineTransform22toTransformationMatrixEv(
     const WebCore::AffineTransform* self) {
+    WebCore::AffineTransform transform{};
+    if (!GuestCopyIn_nid_no_patch(&transform, self, sizeof(transform))) NotImplementedAt_nid_no_patch(__func__, __FILE__, __LINE__);
+    const auto& m = transform.m_transform;
     WebCore::TransformationMatrix result;
-    result.m_matrix[0][0] = self->m_transform[0];
-    result.m_matrix[0][1] = self->m_transform[1];
+    result.m_matrix[0][0] = m[0];
+    result.m_matrix[0][1] = m[1];
     result.m_matrix[0][2] = 0.0;
     result.m_matrix[0][3] = 0.0;
-    result.m_matrix[1][0] = self->m_transform[2];
-    result.m_matrix[1][1] = self->m_transform[3];
+    result.m_matrix[1][0] = m[2];
+    result.m_matrix[1][1] = m[3];
     result.m_matrix[1][2] = 0.0;
     result.m_matrix[1][3] = 0.0;
     result.m_matrix[2][0] = 0.0;
     result.m_matrix[2][1] = 0.0;
     result.m_matrix[2][2] = 1.0;
     result.m_matrix[2][3] = 0.0;
-    result.m_matrix[3][0] = self->m_transform[4];
-    result.m_matrix[3][1] = self->m_transform[5];
+    result.m_matrix[3][0] = m[4];
+    result.m_matrix[3][1] = m[5];
     result.m_matrix[3][2] = 0.0;
     result.m_matrix[3][3] = 1.0;
     return result;
 }
 
 double APS5_VABI _ZNK7WebCore15AffineTransform6xScaleEv(const WebCore::AffineTransform* self) {
-    return std::hypot(self->m_transform[0], self->m_transform[1]);
+    WebCore::AffineTransform transform{};
+    if (!GuestCopyIn_nid_no_patch(&transform, self, sizeof(transform))) NotImplementedAt_nid_no_patch(__func__, __FILE__, __LINE__);
+    return std::hypot(transform.m_transform[0], transform.m_transform[1]);
 }
 
 double APS5_VABI _ZNK7WebCore15AffineTransform6yScaleEv(const WebCore::AffineTransform* self) {
-    return std::hypot(self->m_transform[2], self->m_transform[3]);
+    WebCore::AffineTransform transform{};
+    if (!GuestCopyIn_nid_no_patch(&transform, self, sizeof(transform))) NotImplementedAt_nid_no_patch(__func__, __FILE__, __LINE__);
+    return std::hypot(transform.m_transform[2], transform.m_transform[3]);
 }
 
 WebCore::FloatQuad APS5_VABI _ZNK7WebCore15AffineTransform7mapQuadERKNS_9FloatQuadE(
-    const WebCore::AffineTransform* self, const WebCore::FloatQuad& q) {
-    if (WebCore::IsAffineIdentityOrTranslation(*self)) {
-        float tx = static_cast<float>(self->m_transform[4]);
-        float ty = static_cast<float>(self->m_transform[5]);
+    const WebCore::AffineTransform* self, const WebCore::FloatQuad& quad) {
+    WebCore::AffineTransform transform{};
+    if (!GuestCopyIn_nid_no_patch(&transform, self, sizeof(transform))) NotImplementedAt_nid_no_patch(__func__, __FILE__, __LINE__);
+    WebCore::FloatQuad q{};
+    if (!GuestCopyIn_nid_no_patch(&q, &quad, sizeof(q))) NotImplementedAt_nid_no_patch(__func__, __FILE__, __LINE__);
+    if (WebCore::IsAffineIdentityOrTranslation(transform)) {
+        float tx = static_cast<float>(transform.m_transform[4]);
+        float ty = static_cast<float>(transform.m_transform[5]);
         return WebCore::FloatQuad{
             WebCore::FloatPoint{q.m_p1.m_x + tx, q.m_p1.m_y + ty},
             WebCore::FloatPoint{q.m_p2.m_x + tx, q.m_p2.m_y + ty},
@@ -261,10 +281,10 @@ WebCore::FloatQuad APS5_VABI _ZNK7WebCore15AffineTransform7mapQuadERKNS_9FloatQu
         };
     }
     return WebCore::FloatQuad{
-        _ZNK7WebCore15AffineTransform8mapPointERKNS_10FloatPointE(self, q.m_p1),
-        _ZNK7WebCore15AffineTransform8mapPointERKNS_10FloatPointE(self, q.m_p2),
-        _ZNK7WebCore15AffineTransform8mapPointERKNS_10FloatPointE(self, q.m_p3),
-        _ZNK7WebCore15AffineTransform8mapPointERKNS_10FloatPointE(self, q.m_p4)
+        WebCore::MapAffinePoint(transform, q.m_p1),
+        WebCore::MapAffinePoint(transform, q.m_p2),
+        WebCore::MapAffinePoint(transform, q.m_p3),
+        WebCore::MapAffinePoint(transform, q.m_p4)
     };
 }
 
@@ -279,21 +299,25 @@ WebCore::IntRect APS5_VABI _ZNK7WebCore15AffineTransform7mapRectERKNS_7IntRectE(
 }
 
 WebCore::FloatRect APS5_VABI _ZNK7WebCore15AffineTransform7mapRectERKNS_9FloatRectE(
-    const WebCore::AffineTransform* self, const WebCore::FloatRect& rect) {
-    if (WebCore::IsAffineIdentityOrTranslation(*self)) {
+    const WebCore::AffineTransform* self, const WebCore::FloatRect& guestRect) {
+    WebCore::AffineTransform transform{};
+    if (!GuestCopyIn_nid_no_patch(&transform, self, sizeof(transform))) NotImplementedAt_nid_no_patch(__func__, __FILE__, __LINE__);
+    WebCore::FloatRect rect{};
+    if (!GuestCopyIn_nid_no_patch(&rect, &guestRect, sizeof(rect))) NotImplementedAt_nid_no_patch(__func__, __FILE__, __LINE__);
+    if (WebCore::IsAffineIdentityOrTranslation(transform)) {
         return WebCore::FloatRect{
-            WebCore::FloatPoint{rect.m_location.m_x + static_cast<float>(self->m_transform[4]),
-                                rect.m_location.m_y + static_cast<float>(self->m_transform[5])},
+            WebCore::FloatPoint{rect.m_location.m_x + static_cast<float>(transform.m_transform[4]),
+                                rect.m_location.m_y + static_cast<float>(transform.m_transform[5])},
             rect.m_size
         };
     }
-    WebCore::FloatPoint p1 = _ZNK7WebCore15AffineTransform8mapPointERKNS_10FloatPointE(self, rect.m_location);
-    WebCore::FloatPoint p2 = _ZNK7WebCore15AffineTransform8mapPointERKNS_10FloatPointE(
-        self, WebCore::FloatPoint{rect.m_location.m_x + rect.m_size.m_width, rect.m_location.m_y});
-    WebCore::FloatPoint p3 = _ZNK7WebCore15AffineTransform8mapPointERKNS_10FloatPointE(
-        self, WebCore::FloatPoint{rect.m_location.m_x + rect.m_size.m_width, rect.m_location.m_y + rect.m_size.m_height});
-    WebCore::FloatPoint p4 = _ZNK7WebCore15AffineTransform8mapPointERKNS_10FloatPointE(
-        self, WebCore::FloatPoint{rect.m_location.m_x, rect.m_location.m_y + rect.m_size.m_height});
+    WebCore::FloatPoint p1 = WebCore::MapAffinePoint(transform, rect.m_location);
+    WebCore::FloatPoint p2 = WebCore::MapAffinePoint(
+        transform, WebCore::FloatPoint{rect.m_location.m_x + rect.m_size.m_width, rect.m_location.m_y});
+    WebCore::FloatPoint p3 = WebCore::MapAffinePoint(
+        transform, WebCore::FloatPoint{rect.m_location.m_x + rect.m_size.m_width, rect.m_location.m_y + rect.m_size.m_height});
+    WebCore::FloatPoint p4 = WebCore::MapAffinePoint(
+        transform, WebCore::FloatPoint{rect.m_location.m_x, rect.m_location.m_y + rect.m_size.m_height});
     float left = std::min({p1.m_x, p2.m_x, p3.m_x, p4.m_x});
     float top = std::min({p1.m_y, p2.m_y, p3.m_y, p4.m_y});
     float right = std::max({p1.m_x, p2.m_x, p3.m_x, p4.m_x});
@@ -319,20 +343,24 @@ WebCore::FloatSize APS5_VABI _ZNK7WebCore15AffineTransform7mapSizeERKNS_9FloatSi
 }
 
 WebCore::FloatPoint APS5_VABI _ZNK7WebCore15AffineTransform8mapPointERKNS_10FloatPointE(
-    const WebCore::AffineTransform* self, const WebCore::FloatPoint& point) {
-    double x = static_cast<double>(point.m_x);
-    double y = static_cast<double>(point.m_y);
-    double x2 = self->m_transform[0] * x + self->m_transform[2] * y + self->m_transform[4];
-    double y2 = self->m_transform[1] * x + self->m_transform[3] * y + self->m_transform[5];
-    return WebCore::FloatPoint{static_cast<float>(x2), static_cast<float>(y2)};
+    const WebCore::AffineTransform* self, const WebCore::FloatPoint& guestPoint) {
+    WebCore::AffineTransform transform{};
+    if (!GuestCopyIn_nid_no_patch(&transform, self, sizeof(transform))) NotImplementedAt_nid_no_patch(__func__, __FILE__, __LINE__);
+    WebCore::FloatPoint point{};
+    if (!GuestCopyIn_nid_no_patch(&point, &guestPoint, sizeof(point))) NotImplementedAt_nid_no_patch(__func__, __FILE__, __LINE__);
+    return WebCore::MapAffinePoint(transform, point);
 }
 
 WebCore::IntPoint APS5_VABI _ZNK7WebCore15AffineTransform8mapPointERKNS_8IntPointE(
-    const WebCore::AffineTransform* self, const WebCore::IntPoint& point) {
+    const WebCore::AffineTransform* self, const WebCore::IntPoint& guestPoint) {
+    WebCore::AffineTransform transform{};
+    if (!GuestCopyIn_nid_no_patch(&transform, self, sizeof(transform))) NotImplementedAt_nid_no_patch(__func__, __FILE__, __LINE__);
+    WebCore::IntPoint point{};
+    if (!GuestCopyIn_nid_no_patch(&point, &guestPoint, sizeof(point))) NotImplementedAt_nid_no_patch(__func__, __FILE__, __LINE__);
     double x = static_cast<double>(point.m_x);
     double y = static_cast<double>(point.m_y);
-    double x2 = self->m_transform[0] * x + self->m_transform[2] * y + self->m_transform[4];
-    double y2 = self->m_transform[1] * x + self->m_transform[3] * y + self->m_transform[5];
+    double x2 = transform.m_transform[0] * x + transform.m_transform[2] * y + transform.m_transform[4];
+    double y2 = transform.m_transform[1] * x + transform.m_transform[3] * y + transform.m_transform[5];
     return WebCore::IntPoint{
         static_cast<int>(std::lround(x2)),
         static_cast<int>(std::lround(y2))
