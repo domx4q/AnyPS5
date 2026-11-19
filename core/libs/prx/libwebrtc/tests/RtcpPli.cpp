@@ -1,5 +1,13 @@
 #include "prx/libwebrtc/libwebrtc.hpp"
 
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
+
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -86,6 +94,87 @@ void TestNullArgumentsThrow() {
     Require(Unchanged(pli));
 }
 
+struct GuardedPage {
+    void* base = nullptr;
+    std::size_t size = 0;
+
+    GuardedPage() {
+#ifdef _WIN32
+        SYSTEM_INFO info{};
+        GetSystemInfo(&info);
+        size = info.dwPageSize;
+        base = VirtualAlloc(nullptr, size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+#else
+        size = static_cast<std::size_t>(sysconf(_SC_PAGESIZE));
+        base = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (base == MAP_FAILED)
+            base = nullptr;
+#endif
+        Require(base != nullptr);
+    }
+
+    ~GuardedPage() {
+        if (!base) return;
+#ifdef _WIN32
+        VirtualFree(base, 0, MEM_RELEASE);
+#else
+        munmap(base, size);
+#endif
+    }
+
+    template<typename T> T* As() const { return static_cast<T*>(base); }
+
+    void SetReadOnly() const {
+#ifdef _WIN32
+        DWORD prev = 0;
+        Require(VirtualProtect(base, size, PAGE_READONLY, &prev) != 0);
+#else
+        Require(mprotect(base, size, PROT_READ) == 0);
+#endif
+    }
+
+    void SetInaccessible() const {
+#ifdef _WIN32
+        DWORD prev = 0;
+        Require(VirtualProtect(base, size, PAGE_NOACCESS, &prev) != 0);
+#else
+        Require(mprotect(base, size, PROT_NONE) == 0);
+#endif
+    }
+};
+
+void TestGuardedPointers() {
+    std::vector<std::uint8_t> payload {0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0};
+    WebRtcRtcpCommonHeader header {206, 1, 0, 8, payload.data()};
+    {
+        GuardedPage page;
+        page.SetInaccessible();
+        WebRtcRtcpPli pli = Filled();
+        RequireInvalidArgument([&] { _ZN6webrtc4rtcp3Pli5ParseERKNS0_12CommonHeaderE_nid_postfix(&pli, page.As<WebRtcRtcpCommonHeader>()); });
+        Require(Unchanged(pli));
+    }
+    {
+        GuardedPage page;
+        page.SetInaccessible();
+        WebRtcRtcpCommonHeader unreadable {206, 1, 0, 8, page.As<std::uint8_t>()};
+        WebRtcRtcpPli pli = Filled();
+        RequireInvalidArgument([&] { _ZN6webrtc4rtcp3Pli5ParseERKNS0_12CommonHeaderE_nid_postfix(&pli, &unreadable); });
+        Require(Unchanged(pli));
+    }
+    {
+        GuardedPage page;
+        *page.As<WebRtcRtcpPli>() = Filled();
+        page.SetReadOnly();
+        RequireInvalidArgument([&] { _ZN6webrtc4rtcp3Pli5ParseERKNS0_12CommonHeaderE_nid_postfix(page.As<WebRtcRtcpPli>(), &header); });
+        Require(Unchanged(*page.As<WebRtcRtcpPli>()));
+    }
+    {
+        GuardedPage page;
+        page.SetInaccessible();
+        RequireInvalidArgument([&] { _ZN6webrtc4rtcp3Pli5ParseERKNS0_12CommonHeaderE_nid_postfix(page.As<WebRtcRtcpPli>(), &header); });
+    }
+}
+
 }
 
 int main() {
@@ -93,5 +182,6 @@ int main() {
     TestLongerPayloadReadsTheCommonFeedbackOnly();
     TestShortPayloadLeavesThePacketUntouched();
     TestNullArgumentsThrow();
+    TestGuardedPointers();
     return 0;
 }

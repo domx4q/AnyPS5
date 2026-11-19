@@ -41,7 +41,9 @@
  */
 
 #include "prx/libwebrtc/libwebrtc.hpp"
+#include "prx/libc/include/GuestPtr.hpp"
 
+#include <array>
 #include <cstdint>
 #include <stdexcept>
 
@@ -60,12 +62,23 @@ bool APS5_VABI _ZN6webrtc4rtcp3Pli5ParseERKNS0_12CommonHeaderE_nid_postfix(WebRt
         throw std::invalid_argument("Pli::Parse requires a packet object");
     if (!packet)
         throw std::invalid_argument("Pli::Parse requires a common header");
-    if (packet->payloadSize < WebRtcRtcpCommonFeedbackSize)
+    WebRtcRtcpCommonHeader header{};
+    if (!GuestPtr<WebRtcRtcpCommonHeader>(packet).CopyIn(header))
+        throw std::invalid_argument("Pli::Parse requires a readable common header");
+    if (header.payloadSize < WebRtcRtcpCommonFeedbackSize)
         return false;
-    if (!packet->payload)
+    if (!header.payload)
         throw std::invalid_argument("Pli::Parse requires a payload");
-    pli->senderSsrc = ReadBigEndian(packet->payload);
-    pli->mediaSsrc = ReadBigEndian(packet->payload + 4);
+    std::array<std::uint8_t, WebRtcRtcpCommonFeedbackSize> payload{};
+    if (!GuestPtr<std::uint8_t>(header.payload).CopyIn(payload.data(), payload.size()))
+        throw std::invalid_argument("Pli::Parse requires a readable payload");
+    WebRtcRtcpPli host{};
+    if (!GuestWritable_nid_no_patch(pli, sizeof(*pli)) || !GuestPtr<WebRtcRtcpPli>(pli).CopyIn(host))
+        throw std::invalid_argument("Pli::Parse requires a writable packet object");
+    host.senderSsrc = ReadBigEndian(payload.data());
+    host.mediaSsrc = ReadBigEndian(payload.data() + 4);
+    if (!GuestPtr<WebRtcRtcpPli>(pli).CopyOut(host))
+        throw std::invalid_argument("Pli::Parse requires a writable packet object");
     return true;
 }
 
