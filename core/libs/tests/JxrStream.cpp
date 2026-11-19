@@ -374,6 +374,21 @@ void NullState(Jxr::Stream& stream) {
         RequireInvalidArgument([&] { writeIS_nid_postfix(nullptr, &io); }, "successful write advanced a null packet");
         Require(calls == std::vector<char>({'w'}) && std::memcmp(&io, &initial, sizeof(io)) == 0, "successful write of a null packet mutated state");
     }
+
+    auto* const unmappedIo = reinterpret_cast<Jxr::BitIo*>(0x10);
+    errno = 71;
+    calls.clear();
+    RequireInvalidArgument([&] { readIS_nid_postfix(nullptr, unmappedIo); }, "read accepted an unmapped bit state");
+    RequireInvalidArgument([&] { writeIS_nid_postfix(nullptr, unmappedIo); }, "write accepted an unmapped bit state");
+    RequireInvalidArgument([&] { detachISRead_nid_postfix(nullptr, unmappedIo); }, "detach read accepted an unmapped bit state");
+    RequireInvalidArgument([&] { detachISWrite_nid_postfix(nullptr, unmappedIo); }, "detach write accepted an unmapped bit state");
+    RequireInvalidArgument([&] { attachISWrite_nid_postfix(unmappedIo, &stream); }, "attach write accepted an unmapped bit state");
+    io = {7, 19, 13, ~8192, ring.data(), packet, reinterpret_cast<Jxr::Stream*>(0x10), 91};
+    initial = io;
+    RequireInvalidArgument([&] { readIS_nid_postfix(nullptr, &io); }, "read accepted an unmapped stream");
+    RequireInvalidArgument([&] { writeIS_nid_postfix(nullptr, &io); }, "write accepted an unmapped stream");
+    RequireInvalidArgument([&] { attachISWrite_nid_postfix(&io, reinterpret_cast<Jxr::Stream*>(0x10)); }, "attach write accepted an unmapped stream");
+    Require(calls.empty() && errno == 71 && std::memcmp(&io, &initial, sizeof(io)) == 0, "rejected unmapped pointers performed I/O, changed errno or mutated state");
 }
 
 void GuestMapping(Jxr::Stream& stream) {
@@ -413,6 +428,17 @@ void GuestMapping(Jxr::Stream& stream) {
     Require(std::memcmp(&io, &initial, sizeof(io)) == 0 && std::equal(before.begin(), before.end(), bytes), "rejected guest packet write mutated state or backing");
     Require(sceKernelMprotect(mapping, mappingSize, 3) == 0, "restore writable guest packet backing");
 #endif
+    auto* const readOnlyIo = reinterpret_cast<Jxr::BitIo*>(bytes + 3 * PacketSize);
+    *readOnlyIo = {7, 19, 13, ~8192, bytes, bytes + PacketSize, &stream, 91};
+    const Jxr::BitIo readOnlyInitial = *readOnlyIo;
+    Require(sceKernelMprotect(mapping, mappingSize, 1) == 0, "protect guest bit state read-only");
+    calls.clear();
+    RequireInvalidArgument([&] { readIS_nid_postfix(nullptr, readOnlyIo); }, "read accepted a read-only bit state");
+    RequireInvalidArgument([&] { writeIS_nid_postfix(nullptr, readOnlyIo); }, "write accepted a read-only bit state");
+    RequireInvalidArgument([&] { detachISRead_nid_postfix(nullptr, readOnlyIo); }, "detach read accepted a read-only bit state");
+    RequireInvalidArgument([&] { detachISWrite_nid_postfix(nullptr, readOnlyIo); }, "detach write accepted a read-only bit state");
+    Require(calls.empty() && std::memcmp(readOnlyIo, &readOnlyInitial, sizeof(readOnlyInitial)) == 0, "rejected read-only bit state performed I/O or changed");
+    Require(sceKernelMprotect(mapping, mappingSize, 3) == 0, "restore writable guest bit state");
     Require(sceKernelMunmap(reinterpret_cast<std::uint64_t>(mapping), mappingSize) == 0, "unmap guest packet backing");
     Require(sceKernelReleaseDirectMemory(physical, mappingSize) == 0, "release guest packet backing");
 }

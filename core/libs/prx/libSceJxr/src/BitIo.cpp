@@ -1,5 +1,6 @@
 #include "prx/libSceJxr/libSceJxr.hpp"
 #include "prx/libc/include/General.hpp"
+#include <cerrno>
 #include <cstdint>
 #include <stdexcept>
 #include <string>
@@ -68,6 +69,22 @@ void PutMasked(Jxr::BitIo* io, std::uint32_t value, std::uint32_t bits) {
     JxrPutBit16z_nid_no_patch(io, value & (0xffffu >> (16 - bits)), bits);
 }
 
+template <typename T>
+bool CopyIn(T& value, const T* source) {
+    const int savedErrno = errno;
+    const bool copied = GuestCopyIn_nid_no_patch(&value, source, sizeof(T));
+    errno = savedErrno;
+    return copied;
+}
+
+template <typename T>
+bool CopyOut(T* destination, const T& value) {
+    const int savedErrno = errno;
+    const bool copied = GuestCopyOut_nid_no_patch(destination, &value, sizeof(T));
+    errno = savedErrno;
+    return copied;
+}
+
 } // namespace
 
 extern "C" {
@@ -97,16 +114,21 @@ std::int64_t APS5_VABI attachISRead_nid_postfix(Jxr::BitIo* io, Jxr::Stream* str
 
 std::int64_t APS5_VABI attachISWrite_nid_postfix(Jxr::BitIo* io, Jxr::Stream* stream) {
     State(io, __func__);
-    Require(stream && stream->getPosition, __func__, "missing stream position callback");
-    stream->getPosition(stream, &io->referenceOffset);
+    decltype(Jxr::Stream::getPosition) getPosition = nullptr;
+    Require(stream && CopyIn(getPosition, &stream->getPosition) && getPosition, __func__, "missing stream position callback");
+    Require(GuestWritable_nid_no_patch(io, sizeof(Jxr::BitIo)), __func__, "unwritable bit state");
+    getPosition(stream, &io->referenceOffset);
     const auto address = reinterpret_cast<std::uintptr_t>(io);
     Require(address >= 8192, __func__, "bit state address underflows the packet buffer");
-    io->start = reinterpret_cast<std::uint8_t*>(address - 8192);
-    io->current = io->start;
-    io->accumulator = 0;
-    io->bitsUsed = 0;
-    io->mask = ~8192;
-    io->stream = stream;
+    Jxr::BitIo state{};
+    Require(CopyIn(state, io), __func__, "unreadable bit state");
+    state.start = reinterpret_cast<std::uint8_t*>(address - 8192);
+    state.current = state.start;
+    state.accumulator = 0;
+    state.bitsUsed = 0;
+    state.mask = ~8192;
+    state.stream = stream;
+    Require(CopyOut(io, state), __func__, "unwritable bit state");
     return 0;
 }
 
