@@ -4,6 +4,13 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <stdexcept>
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
 
 namespace {
 
@@ -84,6 +91,88 @@ void CheckSingleWordDivisors() {
     }
 }
 
+class GuardedPage {
+public:
+    GuardedPage() {
+#ifdef _WIN32
+        SYSTEM_INFO info{};
+        GetSystemInfo(&info);
+        size = info.dwPageSize;
+        allocation = static_cast<unsigned char*>(VirtualAlloc(nullptr, size * 2, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
+        Require(allocation != nullptr, "guarded page", "allocation");
+        DWORD previous = 0;
+        Require(VirtualProtect(allocation + size, size, PAGE_NOACCESS, &previous) != 0, "guarded page", "guard");
+#else
+        size = static_cast<std::size_t>(sysconf(_SC_PAGESIZE));
+        void* mapping = mmap(nullptr, size * 2, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        Require(mapping != MAP_FAILED, "guarded page", "allocation");
+        allocation = static_cast<unsigned char*>(mapping);
+        Require(mprotect(allocation + size, size, PROT_NONE) == 0, "guarded page", "guard");
+#endif
+    }
+    GuardedPage(const GuardedPage&) = delete;
+    GuardedPage& operator=(const GuardedPage&) = delete;
+    ~GuardedPage() {
+#ifdef _WIN32
+        VirtualFree(allocation, 0, MEM_RELEASE);
+#else
+        munmap(allocation, size * 2);
+#endif
+    }
+    std::uint64_t* WordsBeforeGuard(std::size_t count) const { return reinterpret_cast<std::uint64_t*>(allocation + size) - count; }
+    void ReadOnly() {
+#ifdef _WIN32
+        DWORD previous = 0;
+        Require(VirtualProtect(allocation, size, PAGE_READONLY, &previous) != 0, "guarded page", "read-only");
+#else
+        Require(mprotect(allocation, size, PROT_READ) == 0, "guarded page", "read-only");
+#endif
+    }
+
+private:
+    unsigned char* allocation = nullptr;
+    std::size_t size = 0;
+};
+
+template<typename Call>
+bool Rejects(Call call) {
+    try {
+        call();
+    } catch (const std::invalid_argument&) {
+        return true;
+    }
+    return false;
+}
+
+void CheckGuestPointers() {
+    auto* const unmapped = reinterpret_cast<std::uint64_t*>(std::uintptr_t{0x10});
+    Require(Rejects([&] { _ZNSt8__sce_v27_MP_GetEPy_nid_postfix(unmapped); }), "unmapped", "get");
+    Require(Rejects([&] { _ZNSt8__sce_v27_MP_AddEPyy_nid_postfix(unmapped, 1); }), "unmapped", "add");
+    Require(Rejects([&] { _ZNSt8__sce_v27_MP_MulEPyyy_nid_postfix(unmapped, 2, 3); }), "unmapped", "mul");
+    Require(Rejects([&] { _ZNSt8__sce_v27_MP_RemEPyy_nid_postfix(unmapped, 3); }), "unmapped", "rem");
+    _ZNSt8__sce_v27_MP_RemEPyy_nid_postfix(unmapped, 0);
+
+    GuardedPage page;
+    std::uint64_t* const low = page.WordsBeforeGuard(2);
+    low[0] = 0x89abcdef;
+    low[1] = 0x1234567;
+    Require(_ZNSt8__sce_v27_MP_GetEPy_nid_postfix(low) == 0x123456789abcdef, "two words before a guard page", "value");
+    Require(Rejects([&] { _ZNSt8__sce_v27_MP_AddEPyy_nid_postfix(low, 1); }), "two words before a guard page", "add");
+    Require(Rejects([&] { _ZNSt8__sce_v27_MP_RemEPyy_nid_postfix(low, 3); }), "two words before a guard page", "rem");
+    Require(low[0] == 0x89abcdef && low[1] == 0x1234567, "two words before a guard page", "unchanged");
+    Require(Rejects([&] { _ZNSt8__sce_v27_MP_MulEPyyy_nid_postfix(low, 2, 3); }), "two words before a guard page", "mul");
+
+    std::uint64_t* const value = page.WordsBeforeGuard(5);
+    const std::uint64_t original[5] {0xffffffff, 0xffffffff, 0x5, 0x6, 0x0};
+    std::memcpy(value, original, sizeof(original));
+    page.ReadOnly();
+    Require(_ZNSt8__sce_v27_MP_GetEPy_nid_postfix(value) == 0xffffffffffffffff, "read-only", "get");
+    Require(Rejects([&] { _ZNSt8__sce_v27_MP_AddEPyy_nid_postfix(value, 1); }), "read-only", "add");
+    Require(Rejects([&] { _ZNSt8__sce_v27_MP_MulEPyyy_nid_postfix(value, 2, 3); }), "read-only", "mul");
+    Require(Rejects([&] { _ZNSt8__sce_v27_MP_RemEPyy_nid_postfix(value, 3); }), "read-only", "rem");
+    Require(std::memcmp(value, original, sizeof(original)) == 0, "read-only", "unchanged");
+}
+
 }
 
 int main() {
@@ -112,5 +201,6 @@ int main() {
         Check(entry, words);
     }
     CheckSingleWordDivisors();
+    CheckGuestPointers();
     return 0;
 }

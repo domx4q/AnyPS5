@@ -1,12 +1,28 @@
 #include "prx/libc/include/Api.hpp"
+#include "prx/libc/include/General.hpp"
 
+#include <array>
 #include <cstdint>
+#include <stdexcept>
+#include <string>
 
 namespace {
 
 constexpr int Words = 5;
 constexpr std::uint64_t Base = std::uint64_t{1} << 32;
 constexpr std::uint64_t Mask = Base - 1;
+
+using Value = std::array<std::uint64_t, Words>;
+
+Value LoadValue(const std::uint64_t* u, const char* function) {
+    Value value;
+    if (!GuestCopyIn_nid_no_patch(value.data(), u, sizeof(value))) throw std::invalid_argument(std::string(function) + ": unreadable value");
+    return value;
+}
+
+void StoreValue(std::uint64_t* u, const Value& value, const char* function) {
+    if (!GuestCopyOut_nid_no_patch(u, value.data(), sizeof(value))) throw std::invalid_argument(std::string(function) + ": unwritable value");
+}
 
 int Length(const std::uint64_t* words, int count) {
     while (count > 0 && words[count - 1] == 0) --count;
@@ -68,9 +84,14 @@ void Reduce(std::uint64_t* u, int at, const std::uint64_t* v, int n) {
 
 extern "C" {
 
-std::uint64_t APS5_VABI _ZNSt8__sce_v27_MP_GetEPy_nid_postfix(std::uint64_t* u) { return (u[1] << 32) + u[0]; }
+std::uint64_t APS5_VABI _ZNSt8__sce_v27_MP_GetEPy_nid_postfix(std::uint64_t* u) {
+    std::uint64_t low[2];
+    if (!GuestCopyIn_nid_no_patch(low, u, sizeof(low))) throw std::invalid_argument("_MP_Get: unreadable value");
+    return (low[1] << 32) + low[0];
+}
 
-void APS5_VABI _ZNSt8__sce_v27_MP_AddEPyy_nid_postfix(std::uint64_t* u, std::uint64_t value) {
+void APS5_VABI _ZNSt8__sce_v27_MP_AddEPyy_nid_postfix(std::uint64_t* guest, std::uint64_t value) {
+    Value u = LoadValue(guest, "_MP_Add");
     std::uint64_t sum = (value & Mask) + u[0];
     u[0] = sum & Mask;
     sum = (sum >> 32) + (value >> 32) + u[1];
@@ -79,9 +100,11 @@ void APS5_VABI _ZNSt8__sce_v27_MP_AddEPyy_nid_postfix(std::uint64_t* u, std::uin
         sum = (sum >> 32) + u[index];
         u[index] = sum & Mask;
     }
+    StoreValue(guest, u, "_MP_Add");
 }
 
-void APS5_VABI _ZNSt8__sce_v27_MP_MulEPyyy_nid_postfix(std::uint64_t* w, std::uint64_t left, std::uint64_t right) {
+void APS5_VABI _ZNSt8__sce_v27_MP_MulEPyyy_nid_postfix(std::uint64_t* guest, std::uint64_t left, std::uint64_t right) {
+    Value w{};
     const std::uint64_t leftLow = left & Mask;
     const std::uint64_t leftHigh = left >> 32;
     const std::uint64_t rightLow = right & Mask;
@@ -100,6 +123,7 @@ void APS5_VABI _ZNSt8__sce_v27_MP_MulEPyyy_nid_postfix(std::uint64_t* w, std::ui
     w[2] = carry;
     if (rightHigh == 0) {
         w[3] = 0;
+        StoreValue(guest, w, "_MP_Mul");
         return;
     }
     const std::uint64_t middle = w[1] + leftLow * rightHigh;
@@ -107,20 +131,23 @@ void APS5_VABI _ZNSt8__sce_v27_MP_MulEPyyy_nid_postfix(std::uint64_t* w, std::ui
     const std::uint64_t high = carry + leftHigh * rightHigh + (middle >> 32);
     w[2] = high & Mask;
     w[3] = high >> 32;
+    StoreValue(guest, w, "_MP_Mul");
 }
 
-void APS5_VABI _ZNSt8__sce_v27_MP_RemEPyy_nid_postfix(std::uint64_t* u, std::uint64_t value) {
+void APS5_VABI _ZNSt8__sce_v27_MP_RemEPyy_nid_postfix(std::uint64_t* guest, std::uint64_t value) {
     std::uint64_t v[2] {value & Mask, value >> 32};
     const int n = Length(v, 2);
     if (n == 0) return;
-    const int length = Length(u, Words);
+    Value u = LoadValue(guest, "_MP_Rem");
+    const int length = Length(u.data(), Words);
     const std::uint64_t factor = Base / (v[n - 1] + 1);
     if (factor != 1) {
-        Scale(u, Words, factor);
+        Scale(u.data(), Words, factor);
         Scale(v, n, factor);
     }
-    for (int at = length - n; at >= 0; --at) Reduce(u, at, v, n);
-    if (factor != 1) Unscale(u, factor);
+    for (int at = length - n; at >= 0; --at) Reduce(u.data(), at, v, n);
+    if (factor != 1) Unscale(u.data(), factor);
+    StoreValue(guest, u, "_MP_Rem");
 }
 
 }
