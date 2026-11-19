@@ -15,6 +15,7 @@
 #include "prx/libkernel/Apr/include/AprCommandBuffer.hpp"
 #include "prx/libkernel/DirectMemory/DirectMemory.hpp"
 #include <algorithm>
+#include <array>
 #include <cerrno>
 #include <cstddef>
 #include <cerrno>
@@ -280,9 +281,11 @@ int APS5_VABI pthread_get_specificarray_np_nid_postfix(PthreadKey key, int total
     constexpr int MaxKeys = 512;
     if (total <= 0 || key < 1 || key > MaxKeys || total > MaxKeys - (key - 1)) return GuestEinval;
     if (!array) return GuestEfault;
+    std::array<void*, MaxKeys> values{};
     for (int i = 0; i < total; ++i) {
-        array[i] = scePthreadGetspecific(key + i);
+        values[i] = scePthreadGetspecific(key + i);
     }
+    if (!CopyOutBytes(array, values.data(), sizeof(void*) * static_cast<std::size_t>(total))) return GuestEfault;
     return 0;
 }
 

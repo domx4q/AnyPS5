@@ -8,6 +8,7 @@
 #include <atomic>
 #include <cerrno>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <exception>
 #include <iterator>
@@ -263,6 +264,12 @@ void TestAttr() {
             if (pthread_get_specificarray_np_nid_postfix(key, IntMax, nullptr) != GUEST_EINVAL) return false;
         }
         if (pthread_get_specificarray_np_nid_postfix(1, 1, nullptr) != GUEST_EFAULT) return false;
+        errno = 1234;
+        for (const std::uintptr_t address : {std::uintptr_t{1}, ~std::uintptr_t{0xFFF}}) {
+            if (pthread_get_specificarray_np_nid_postfix(1, 1, reinterpret_cast<void**>(address)) != GUEST_EFAULT) return false;
+            if (pthread_get_specificarray_np_nid_postfix(1, 512, reinterpret_cast<void**>(address)) != GUEST_EFAULT) return false;
+        }
+        if (errno != 1234) return false;
         PthreadKey key1 = 0;
         PthreadKey key2 = 0;
         std::vector<PthreadKey> createdKeys;
