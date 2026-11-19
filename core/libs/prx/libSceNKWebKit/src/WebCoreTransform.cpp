@@ -517,33 +517,41 @@ void APS5_VABI _ZN7WebCore20TransformationMatrixC2ERKNS_15AffineTransformE(
 }
 
 bool APS5_VABI _ZNK7WebCore20TransformationMatrix12isInvertibleEv(const WebCore::TransformationMatrix* self) {
-    auto type = WebCore::GetMatrixType(*self);
+    WebCore::TransformationMatrix matrix{};
+    if (!GuestCopyIn_nid_no_patch(&matrix, self, sizeof(matrix))) NotImplementedAt_nid_no_patch(__func__, __FILE__, __LINE__);
+    auto type = WebCore::GetMatrixType(matrix);
     if (type == WebCore::MatrixType::IdentityOrTranslation) {
         return true;
     }
     double det = (type == WebCore::MatrixType::Affine)
-        ? (self->m_matrix[0][0] * self->m_matrix[1][1] - self->m_matrix[0][1] * self->m_matrix[1][0])
-        : WebCore::Determinant4x4(self->m_matrix);
+        ? (matrix.m_matrix[0][0] * matrix.m_matrix[1][1] - matrix.m_matrix[0][1] * matrix.m_matrix[1][0])
+        : WebCore::Determinant4x4(matrix.m_matrix);
     return std::abs(det) >= WebCore::kSmallNumber;
 }
 
 WebCore::AffineTransform APS5_VABI _ZNK7WebCore20TransformationMatrix17toAffineTransformEv(
     const WebCore::TransformationMatrix* self) {
+    WebCore::TransformationMatrix matrix{};
+    if (!GuestCopyIn_nid_no_patch(&matrix, self, sizeof(matrix))) NotImplementedAt_nid_no_patch(__func__, __FILE__, __LINE__);
     WebCore::AffineTransform result;
-    result.m_transform[0] = self->m_matrix[0][0];
-    result.m_transform[1] = self->m_matrix[0][1];
-    result.m_transform[2] = self->m_matrix[1][0];
-    result.m_transform[3] = self->m_matrix[1][1];
-    result.m_transform[4] = self->m_matrix[3][0];
-    result.m_transform[5] = self->m_matrix[3][1];
+    result.m_transform[0] = matrix.m_matrix[0][0];
+    result.m_transform[1] = matrix.m_matrix[0][1];
+    result.m_transform[2] = matrix.m_matrix[1][0];
+    result.m_transform[3] = matrix.m_matrix[1][1];
+    result.m_transform[4] = matrix.m_matrix[3][0];
+    result.m_transform[5] = matrix.m_matrix[3][1];
     return result;
 }
 
 WebCore::FloatQuad APS5_VABI _ZNK7WebCore20TransformationMatrix7mapQuadERKNS_9FloatQuadE(
-    const WebCore::TransformationMatrix* self, const WebCore::FloatQuad& q) {
-    if (WebCore::GetMatrixType(*self) == WebCore::MatrixType::IdentityOrTranslation) {
-        float tx = static_cast<float>(self->m_matrix[3][0]);
-        float ty = static_cast<float>(self->m_matrix[3][1]);
+    const WebCore::TransformationMatrix* self, const WebCore::FloatQuad& guestQuad) {
+    WebCore::TransformationMatrix matrix{};
+    if (!GuestCopyIn_nid_no_patch(&matrix, self, sizeof(matrix))) NotImplementedAt_nid_no_patch(__func__, __FILE__, __LINE__);
+    WebCore::FloatQuad q{};
+    if (!GuestCopyIn_nid_no_patch(&q, &guestQuad, sizeof(q))) NotImplementedAt_nid_no_patch(__func__, __FILE__, __LINE__);
+    if (WebCore::GetMatrixType(matrix) == WebCore::MatrixType::IdentityOrTranslation) {
+        float tx = static_cast<float>(matrix.m_matrix[3][0]);
+        float ty = static_cast<float>(matrix.m_matrix[3][1]);
         return WebCore::FloatQuad{
             WebCore::FloatPoint{q.m_p1.m_x + tx, q.m_p1.m_y + ty},
             WebCore::FloatPoint{q.m_p2.m_x + tx, q.m_p2.m_y + ty},
@@ -552,10 +560,10 @@ WebCore::FloatQuad APS5_VABI _ZNK7WebCore20TransformationMatrix7mapQuadERKNS_9Fl
         };
     }
     return WebCore::FloatQuad{
-        WebCore::InternalMapPoint(*self, q.m_p1),
-        WebCore::InternalMapPoint(*self, q.m_p2),
-        WebCore::InternalMapPoint(*self, q.m_p3),
-        WebCore::InternalMapPoint(*self, q.m_p4)
+        WebCore::InternalMapPoint(matrix, q.m_p1),
+        WebCore::InternalMapPoint(matrix, q.m_p2),
+        WebCore::InternalMapPoint(matrix, q.m_p3),
+        WebCore::InternalMapPoint(matrix, q.m_p4)
     };
 }
 
@@ -570,12 +578,16 @@ WebCore::IntRect APS5_VABI _ZNK7WebCore20TransformationMatrix7mapRectERKNS_7IntR
 }
 
 WebCore::FloatRect APS5_VABI _ZNK7WebCore20TransformationMatrix7mapRectERKNS_9FloatRectE(
-    const WebCore::TransformationMatrix* self, const WebCore::FloatRect& r) {
-    auto type = WebCore::GetMatrixType(*self);
+    const WebCore::TransformationMatrix* self, const WebCore::FloatRect& guestRect) {
+    WebCore::TransformationMatrix matrix{};
+    if (!GuestCopyIn_nid_no_patch(&matrix, self, sizeof(matrix))) NotImplementedAt_nid_no_patch(__func__, __FILE__, __LINE__);
+    WebCore::FloatRect r{};
+    if (!GuestCopyIn_nid_no_patch(&r, &guestRect, sizeof(r))) NotImplementedAt_nid_no_patch(__func__, __FILE__, __LINE__);
+    auto type = WebCore::GetMatrixType(matrix);
     if (type == WebCore::MatrixType::IdentityOrTranslation) {
         return WebCore::FloatRect{
-            WebCore::FloatPoint{r.m_location.m_x + static_cast<float>(self->m_matrix[3][0]),
-                                r.m_location.m_y + static_cast<float>(self->m_matrix[3][1])},
+            WebCore::FloatPoint{r.m_location.m_x + static_cast<float>(matrix.m_matrix[3][0]),
+                                r.m_location.m_y + static_cast<float>(matrix.m_matrix[3][1])},
             r.m_size
         };
     }
@@ -586,10 +598,10 @@ WebCore::FloatRect APS5_VABI _ZNK7WebCore20TransformationMatrix7mapRectERKNS_9Fl
     float maxY = r.m_location.m_y + r.m_size.m_height;
 
     if (type == WebCore::MatrixType::Affine) {
-        double a = self->m_matrix[0][0];
-        double b = self->m_matrix[0][1];
-        double c = self->m_matrix[1][0];
-        double d = self->m_matrix[1][1];
+        double a = matrix.m_matrix[0][0];
+        double b = matrix.m_matrix[0][1];
+        double c = matrix.m_matrix[1][0];
+        double d = matrix.m_matrix[1][1];
 
         double minResultX = (a > 0.0) ? (a * minX) : (a * maxX);
         double maxResultX = (a > 0.0) ? (a * maxX) : (a * minX);
@@ -613,17 +625,17 @@ WebCore::FloatRect APS5_VABI _ZNK7WebCore20TransformationMatrix7mapRectERKNS_9Fl
         }
 
         return WebCore::FloatRect{
-            WebCore::FloatPoint{static_cast<float>(minResultX + self->m_matrix[3][0]),
-                                static_cast<float>(minResultY + self->m_matrix[3][1])},
+            WebCore::FloatPoint{static_cast<float>(minResultX + matrix.m_matrix[3][0]),
+                                static_cast<float>(minResultY + matrix.m_matrix[3][1])},
             WebCore::FloatSize{static_cast<float>(maxResultX - minResultX),
                                static_cast<float>(maxResultY - minResultY)}
         };
     }
 
-    WebCore::FloatPoint p1 = WebCore::InternalMapPoint(*self, WebCore::FloatPoint{minX, minY});
-    WebCore::FloatPoint p2 = WebCore::InternalMapPoint(*self, WebCore::FloatPoint{maxX, minY});
-    WebCore::FloatPoint p3 = WebCore::InternalMapPoint(*self, WebCore::FloatPoint{maxX, maxY});
-    WebCore::FloatPoint p4 = WebCore::InternalMapPoint(*self, WebCore::FloatPoint{minX, maxY});
+    WebCore::FloatPoint p1 = WebCore::InternalMapPoint(matrix, WebCore::FloatPoint{minX, minY});
+    WebCore::FloatPoint p2 = WebCore::InternalMapPoint(matrix, WebCore::FloatPoint{maxX, minY});
+    WebCore::FloatPoint p3 = WebCore::InternalMapPoint(matrix, WebCore::FloatPoint{maxX, maxY});
+    WebCore::FloatPoint p4 = WebCore::InternalMapPoint(matrix, WebCore::FloatPoint{minX, maxY});
     float left = std::min({p1.m_x, p2.m_x, p3.m_x, p4.m_x});
     float top = std::min({p1.m_y, p2.m_y, p3.m_y, p4.m_y});
     float right = std::max({p1.m_x, p2.m_x, p3.m_x, p4.m_x});
@@ -632,33 +644,39 @@ WebCore::FloatRect APS5_VABI _ZNK7WebCore20TransformationMatrix7mapRectERKNS_9Fl
 }
 
 WebCore::FloatPoint APS5_VABI _ZNK7WebCore20TransformationMatrix8mapPointERKNS_10FloatPointE(
-    const WebCore::TransformationMatrix* self, const WebCore::FloatPoint& p) {
-    if (WebCore::GetMatrixType(*self) == WebCore::MatrixType::IdentityOrTranslation) {
+    const WebCore::TransformationMatrix* self, const WebCore::FloatPoint& guestPoint) {
+    WebCore::TransformationMatrix matrix{};
+    if (!GuestCopyIn_nid_no_patch(&matrix, self, sizeof(matrix))) NotImplementedAt_nid_no_patch(__func__, __FILE__, __LINE__);
+    WebCore::FloatPoint p{};
+    if (!GuestCopyIn_nid_no_patch(&p, &guestPoint, sizeof(p))) NotImplementedAt_nid_no_patch(__func__, __FILE__, __LINE__);
+    if (WebCore::GetMatrixType(matrix) == WebCore::MatrixType::IdentityOrTranslation) {
         return WebCore::FloatPoint{
-            p.m_x + static_cast<float>(self->m_matrix[3][0]),
-            p.m_y + static_cast<float>(self->m_matrix[3][1])
+            p.m_x + static_cast<float>(matrix.m_matrix[3][0]),
+            p.m_y + static_cast<float>(matrix.m_matrix[3][1])
         };
     }
-    return WebCore::InternalMapPoint(*self, p);
+    return WebCore::InternalMapPoint(matrix, p);
 }
 
 WebCore::TransformationMatrix APS5_VABI _ZNK7WebCore24MatrixTransformOperation6matrixEv(
     const WebCore::MatrixTransformOperation* self) {
+    WebCore::MatrixTransformOperation operation{};
+    if (!GuestCopyIn_nid_no_patch(&operation, self, sizeof(operation))) NotImplementedAt_nid_no_patch(__func__, __FILE__, __LINE__);
     WebCore::TransformationMatrix result;
-    result.m_matrix[0][0] = self->m_a;
-    result.m_matrix[0][1] = self->m_b;
+    result.m_matrix[0][0] = operation.m_a;
+    result.m_matrix[0][1] = operation.m_b;
     result.m_matrix[0][2] = 0.0;
     result.m_matrix[0][3] = 0.0;
-    result.m_matrix[1][0] = self->m_c;
-    result.m_matrix[1][1] = self->m_d;
+    result.m_matrix[1][0] = operation.m_c;
+    result.m_matrix[1][1] = operation.m_d;
     result.m_matrix[1][2] = 0.0;
     result.m_matrix[1][3] = 0.0;
     result.m_matrix[2][0] = 0.0;
     result.m_matrix[2][1] = 0.0;
     result.m_matrix[2][2] = 1.0;
     result.m_matrix[2][3] = 0.0;
-    result.m_matrix[3][0] = self->m_e;
-    result.m_matrix[3][1] = self->m_f;
+    result.m_matrix[3][0] = operation.m_e;
+    result.m_matrix[3][1] = operation.m_f;
     result.m_matrix[3][2] = 0.0;
     result.m_matrix[3][3] = 1.0;
     return result;
