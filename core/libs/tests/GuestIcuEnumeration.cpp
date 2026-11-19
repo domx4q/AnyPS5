@@ -8,6 +8,11 @@
 #include <cstring>
 #include <stdexcept>
 #include <vector>
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <sys/mman.h>
+#endif
 
 namespace {
 
@@ -162,6 +167,56 @@ void GuestMemory() {
     free_nid_postfix(leftover);
 }
 
+void UnreadableGuestPointers() {
+    auto* unreadable = reinterpret_cast<UEnumeration*>(std::uintptr_t{0x10});
+    auto* unreadableStatus = reinterpret_cast<std::int32_t*>(std::uintptr_t{0x10});
+    std::int32_t status = Success;
+    std::int32_t length = 7;
+    Require(Rejects([&] { uenum_count_nid_postfix(unreadable, &status); }), "unreadable enumeration count");
+    Require(Rejects([&] { uenum_next_nid_postfix(unreadable, &length, &status); }), "unreadable enumeration next");
+    Require(Rejects([&] { uenum_unext_nid_postfix(unreadable, &length, &status); }), "unreadable enumeration unext");
+    Require(Rejects([&] { uenum_close_nid_postfix(unreadable); }), "unreadable enumeration close");
+    Require(status == Success && length == 7, "unreadable enumeration leaves the outputs alone");
+
+    Words words;
+    UEnumeration enumeration = Enumeration(words);
+    Require(Rejects([&] { uenum_count_nid_postfix(&enumeration, unreadableStatus); }), "unreadable status count");
+    Require(Rejects([&] { uenum_next_nid_postfix(&enumeration, &length, unreadableStatus); }), "unreadable status next");
+    Require(Rejects([&] { uenum_unext_nid_postfix(&enumeration, &length, unreadableStatus); }), "unreadable status unext");
+    Require(words.index == 0 && length == 7, "unreadable status does not dispatch");
+
+#ifdef _WIN32
+    auto* page = static_cast<unsigned char*>(VirtualAlloc(nullptr, 8192, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
+    Require(page != nullptr, "map pages");
+#else
+    void* mapped = mmap(nullptr, 8192, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
+    Require(mapped != MAP_FAILED, "map pages");
+    auto* page = static_cast<unsigned char*>(mapped);
+#endif
+    UEnumeration missing{nullptr, &words, Close, nullptr, nullptr, nullptr, nullptr};
+    std::memcpy(page + 4096 - 24, &missing, sizeof(missing));
+    std::memset(page + 64, 0, sizeof(std::int32_t));
+#ifdef _WIN32
+    DWORD previous = 0;
+    Require(VirtualProtect(page + 4096, 4096, PAGE_NOACCESS, &previous) != 0 && VirtualProtect(page, 4096, PAGE_READONLY, &previous) != 0, "protect pages");
+#else
+    Require(mprotect(page + 4096, 4096, PROT_NONE) == 0 && mprotect(page, 4096, PROT_READ) == 0, "protect pages");
+#endif
+    auto* crossing = reinterpret_cast<UEnumeration*>(page + 4096 - 24);
+    Require(Rejects([&] { uenum_count_nid_postfix(crossing, &status); }), "enumeration crossing into an inaccessible page");
+    Require(Rejects([&] { uenum_close_nid_postfix(crossing); }), "close of an enumeration crossing into an inaccessible page");
+    auto* readOnlyStatus = reinterpret_cast<std::int32_t*>(page + 64);
+    UEnumeration unsupported{nullptr, &words, Close, nullptr, nullptr, nullptr, nullptr};
+    Require(Rejects([&] { uenum_count_nid_postfix(&unsupported, readOnlyStatus); }), "unsupported count with a read-only status");
+    Require(Rejects([&] { uenum_next_nid_postfix(&unsupported, &length, readOnlyStatus); }), "unsupported next with a read-only status");
+    Require(*readOnlyStatus == Success && words.closes == 0, "read-only status stays unchanged");
+#ifdef _WIN32
+    Require(VirtualFree(page, 0, MEM_RELEASE) != 0, "unmap pages");
+#else
+    Require(munmap(page, 8192) == 0, "unmap pages");
+#endif
+}
+
 }
 
 int main() {
@@ -174,5 +229,6 @@ int main() {
     Failures();
     MissingCallbacks();
     GuestMemory();
+    UnreadableGuestPointers();
     return 0;
 }
