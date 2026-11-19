@@ -4,7 +4,16 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <stdexcept>
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <sys/mman.h>
+#endif
 
 namespace {
 
@@ -220,6 +229,33 @@ void CheckServiceListLookup() {
     Require(ft_service_list_lookup_nid_postfix(nullptr, "b") == nullptr, "ft_service_list_lookup returns null for a null array");
     Require(ft_service_list_lookup_nid_postfix(descriptors, nullptr) == nullptr, "ft_service_list_lookup returns null for a null id");
     Require(ft_service_list_lookup_nid_postfix(nullptr, nullptr) == nullptr, "ft_service_list_lookup returns null for null inputs");
+    const auto* unmapped = reinterpret_cast<const char*>(0x10);
+    errno = 71;
+    Require(Throws([&] { ft_service_list_lookup_nid_postfix(reinterpret_cast<const GuestServiceDesc*>(0x10), "a"); }),
+        "ft_service_list_lookup rejects an unmapped descriptor array");
+    Require(Throws([&] { ft_service_list_lookup_nid_postfix(descriptors, unmapped); }), "ft_service_list_lookup rejects an unmapped id");
+    const GuestServiceDesc unreadable[]{{"a", &dataA}, {unmapped, &dataB}, {nullptr, nullptr}};
+    Require(ft_service_list_lookup_nid_postfix(unreadable, "a") == &dataA, "ft_service_list_lookup stops at the first match");
+    Require(Throws([&] { ft_service_list_lookup_nid_postfix(unreadable, "b"); }) && errno == 71,
+        "ft_service_list_lookup rejects an unreadable descriptor id without changing errno");
+#ifdef _WIN32
+    auto* page = static_cast<char*>(VirtualAlloc(nullptr, 8192, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
+    DWORD previous = 0;
+    Require(page && VirtualProtect(page + 4096, 4096, PAGE_NOACCESS, &previous), "map a guarded page");
+#else
+    auto* page = static_cast<char*>(mmap(nullptr, 8192, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
+    Require(page != MAP_FAILED && mprotect(page + 4096, 4096, PROT_NONE) == 0, "map a guarded page");
+#endif
+    char* const edge = page + 4096 - 3;
+    std::memcpy(edge, "ab", 3);
+    const GuestServiceDesc guarded[]{{edge, &dataA}, {"abc", &dataB}, {nullptr, nullptr}};
+    Require(ft_service_list_lookup_nid_postfix(guarded, "abc") == &dataB, "ft_service_list_lookup stops reading a shorter id at its end");
+    Require(ft_service_list_lookup_nid_postfix(guarded, edge) == &dataA, "ft_service_list_lookup reads an id that ends at a page boundary");
+#ifdef _WIN32
+    VirtualFree(page, 0, MEM_RELEASE);
+#else
+    munmap(page, 8192);
+#endif
 }
 
 }  // namespace

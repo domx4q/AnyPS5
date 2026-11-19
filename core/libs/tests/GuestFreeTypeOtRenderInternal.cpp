@@ -74,6 +74,7 @@ int main() {
         Require(Throws([&] { FT_Render_Glyph_Internal_nid_postfix(other, slot, mode); }), "foreign library throws");
         Require(Throws([&] { FT_Render_Glyph_Internal_nid_postfix(nullptr, slot, mode); }), "null library throws");
         Require(Throws([&] { FT_Render_Glyph_Internal_nid_postfix(library, nullptr, mode); }), "null slot throws");
+        Require(Throws([&] { FT_Render_Glyph_Internal_nid_postfix(library, reinterpret_cast<GuestGlyphSlotRec*>(0x10), mode); }), "unmapped slot throws");
         GuestGlyphSlotRec copy = *slot;
         Require(Throws([&] { FT_Render_Glyph_Internal_nid_postfix(library, &copy, mode); }), "unregistered slot throws");
         Close(face);

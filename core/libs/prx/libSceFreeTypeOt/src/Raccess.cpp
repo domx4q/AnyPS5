@@ -10,6 +10,8 @@
 #include "prx/libc/include/General.hpp"
 
 #include <algorithm>
+#include <array>
+#include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -37,6 +39,20 @@ struct GuestRForkRef {
 };
 
 static_assert(sizeof(GuestRForkRef) == RefSize && offsetof(GuestRForkRef, offset) == 8);
+
+void CopyIn(void* destination, const void* source, std::size_t bytes, const char* caller) {
+    const int savedErrno = errno;
+    const bool copied = GuestCopyIn_nid_no_patch(destination, source, bytes);
+    errno = savedErrno;
+    if (!copied) NotImplementedAt_nid_no_patch(caller, __FILE__, __LINE__);
+}
+
+void CopyOut(void* destination, const void* source, std::size_t bytes, const char* caller) {
+    const int savedErrno = errno;
+    const bool copied = GuestCopyOut_nid_no_patch(destination, source, bytes);
+    errno = savedErrno;
+    if (!copied) NotImplementedAt_nid_no_patch(caller, __FILE__, __LINE__);
+}
 
 std::int64_t Add(std::int64_t a, std::int64_t b, const char* function) {
     if ((b > 0 && a > LongMax - b) || (b < 0 && a < LongMin - b)) NotImplemented_nid_no_patch(function);
@@ -194,7 +210,7 @@ int APS5_VABI FT_Raccess_Get_HeaderInfo_nid_postfix(GuestRaccessLibrary*, GuestS
     const std::int64_t mapPos = Add(rforkOffset, Field(head, 4, function), function);
     const std::int64_t dataLength = Field(head, 8, function);
     if (!rdataPos) NotImplemented_nid_no_patch(function);
-    *rdataPos = dataStart;
+    CopyOut(rdataPos, &dataStart, sizeof(dataStart), function);
     if (Add(dataStart, dataLength, function) != mapPos || mapPos == rforkOffset) return UnknownFileFormat;
     error = FT_Stream_Seek_nid_postfix(stream, static_cast<std::uint64_t>(mapPos));
     if (error) return error;
@@ -214,7 +230,8 @@ int APS5_VABI FT_Raccess_Get_HeaderInfo_nid_postfix(GuestRaccessLibrary*, GuestS
     error = FT_Stream_Seek_nid_postfix(stream, static_cast<std::uint64_t>(Add(mapPos, typeList, function)));
     if (error) return error;
     if (!mapOffset) NotImplemented_nid_no_patch(function);
-    *mapOffset = mapPos + typeList;
+    const std::int64_t typeListPos = mapPos + typeList;
+    CopyOut(mapOffset, &typeListPos, sizeof(typeListPos), function);
     return 0;
 }
 
@@ -278,13 +295,25 @@ int APS5_VABI FT_Raccess_Get_DataOffsets_nid_postfix(GuestRaccessLibrary* librar
 
 void APS5_VABI FT_Raccess_Guess_nid_postfix(GuestRaccessLibrary* library, GuestStreamRec* stream, char* baseName, char** newNames,
                                            std::int64_t* offsets, std::int32_t* errors) {
-    if (!library || !library->memory || !baseName || !newNames || !offsets || !errors) NotImplemented_nid_no_patch(__func__);
-    for (int rule = 0; rule < RuleCount; ++rule) {
-        newNames[rule] = nullptr;
-        errors[rule] = stream ? FT_Stream_Seek_nid_postfix(stream, 0) : 0;
-        if (errors[rule]) continue;
-        errors[rule] = GuessRule(rule, library, stream, baseName, &newNames[rule], &offsets[rule]);
+    GuestRaccessLibrary owner{};
+    if (library) CopyIn(&owner, library, sizeof(owner), __func__);
+    if (!library || !owner.memory || !baseName || !newNames || !offsets || !errors) NotImplemented_nid_no_patch(__func__);
+    std::array<char*, RuleCount> names{};
+    std::array<std::int64_t, RuleCount> results{};
+    std::array<std::int32_t, RuleCount> codes{};
+    CopyIn(results.data(), offsets, sizeof(results), __func__);
+    if (!GuestWritable_nid_no_patch(newNames, sizeof(names)) || !GuestWritable_nid_no_patch(offsets, sizeof(results)) ||
+        !GuestWritable_nid_no_patch(errors, sizeof(codes))) {
+        NotImplementedAt_nid_no_patch(__func__, __FILE__, __LINE__);
     }
+    for (int rule = 0; rule < RuleCount; ++rule) {
+        codes[rule] = stream ? FT_Stream_Seek_nid_postfix(stream, 0) : 0;
+        if (codes[rule]) continue;
+        codes[rule] = GuessRule(rule, &owner, stream, baseName, &names[rule], &results[rule]);
+    }
+    CopyOut(newNames, names.data(), sizeof(names), __func__);
+    CopyOut(offsets, results.data(), sizeof(results), __func__);
+    CopyOut(errors, codes.data(), sizeof(codes), __func__);
 }
 
 }

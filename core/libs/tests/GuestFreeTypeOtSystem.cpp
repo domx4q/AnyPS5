@@ -312,6 +312,23 @@ void GuessForks() {
         Guess orphan;
         FT_Raccess_Guess_nid_postfix(nullptr, &stream, base, orphan.names, orphan.offsets, orphan.errors);
     }), "a null library throws");
+    errno = 71;
+    Guess kept;
+    Require(Throws([&] {
+        FT_Raccess_Guess_nid_postfix(reinterpret_cast<GuestRaccessLibrary*>(0x10), &stream, base, kept.names, kept.offsets, kept.errors);
+    }), "an unmapped library throws");
+    Require(Throws([&] {
+        FT_Raccess_Guess_nid_postfix(&owner.library, &stream, base, kept.names, reinterpret_cast<std::int64_t*>(0x10), kept.errors);
+    }), "unmapped offsets throw");
+    Require(Throws([&] {
+        FT_Raccess_Guess_nid_postfix(&owner.library, &stream, base, reinterpret_cast<char**>(0x10), kept.offsets, kept.errors);
+    }), "unmapped names throw");
+    Require(Throws([&] {
+        FT_Raccess_Guess_nid_postfix(&owner.library, &stream, base, kept.names, kept.offsets, reinterpret_cast<std::int32_t*>(0x10));
+    }), "unmapped errors throw");
+    Require(errno == 71 && kept.offsets[0] == -7 && kept.names[0] == reinterpret_cast<char*>(1) && kept.errors[0] == -1 &&
+                owner.recorder.allocs == owner.recorder.frees,
+            "rejected outputs leave the arrays, errno and the allocator untouched");
     FT_Stream_Close_nid_postfix(&stream);
 }
 

@@ -1,10 +1,14 @@
 #include "prx/libSceFreeTypeOt/libSceFreeTypeOt.hpp"
 #include "prx/libSceFreeType/include/GuestObjects.hpp"
 #include <cerrno>
+#include <algorithm>
+#include <array>
 #include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <limits>
+#include <string>
 #include "SceTypes.hpp"
 #include "prx/libSceFreeTypeOt/include/Calc.hpp"
 #include "prx/libc/include/General.hpp"
@@ -54,6 +58,45 @@ std::int32_t IntegerSqrt(std::uint64_t value) {
         }
     }
     return static_cast<std::int32_t>(low);
+}
+
+constexpr std::size_t GuestStringChunk = 4096;
+
+void CopyIn(void* destination, std::uintptr_t source, std::size_t bytes, const char* caller) {
+    const int savedErrno = errno;
+    const bool copied = GuestCopyIn_nid_no_patch(destination, reinterpret_cast<const void*>(source), bytes);
+    errno = savedErrno;
+    if (!copied) NotImplementedAt_nid_no_patch(caller, __FILE__, __LINE__);
+}
+
+std::string ReadGuestString(const char* source, const char* caller) {
+    std::array<char, GuestStringChunk> chunk{};
+    std::string text;
+    for (auto address = reinterpret_cast<std::uintptr_t>(source);;) {
+        const std::size_t count = GuestStringChunk - address % GuestStringChunk;
+        CopyIn(chunk.data(), address, count, caller);
+        const auto* end = static_cast<const char*>(std::memchr(chunk.data(), 0, count));
+        if (end) return text.append(chunk.data(), static_cast<std::size_t>(end - chunk.data()));
+        text.append(chunk.data(), count);
+        if (address > std::numeric_limits<std::uintptr_t>::max() - count) NotImplementedAt_nid_no_patch(caller, __FILE__, __LINE__);
+        address += count;
+    }
+}
+
+bool GuestStringEquals(const char* guest, const std::string& expected, const char* caller) {
+    std::array<char, GuestStringChunk> chunk{};
+    auto address = reinterpret_cast<std::uintptr_t>(guest);
+    for (std::size_t offset = 0;;) {
+        const std::size_t count = std::min(GuestStringChunk - address % GuestStringChunk, expected.size() + 1 - offset);
+        CopyIn(chunk.data(), address, count, caller);
+        for (std::size_t index = 0; index < count; ++index) {
+            const char wanted = expected.c_str()[offset + index];
+            if (chunk[index] != wanted) return false;
+            if (wanted == '\0') return true;
+        }
+        offset += count;
+        address += count;
+    }
 }
 
 }
@@ -191,10 +234,10 @@ int APS5_VABI sceFreeTypeOtUnknown_qAPXM5DN62Q_nid_no_patch() {
 APS5_EXPORT("qAPXM5DN62Q", sceFreeTypeOtUnknown_qAPXM5DN62Q_nid_no_patch);
 
 int APS5_VABI FT_Render_Glyph_Internal_nid_postfix(FreeType::GuestLibrary* library, FreeType::GuestGlyphSlotRec* slot, std::int32_t renderMode) {
-    if (!library || !slot || !slot->face || slot->library != library) NotImplemented_nid_no_patch(__func__);
+    if (!library || !slot) NotImplemented_nid_no_patch(__func__);
     bool owned = false;
     for (const auto& face : library->faces) owned = owned || &face->slot == slot;
-    if (!owned) NotImplemented_nid_no_patch(__func__);
+    if (!owned || !slot->face || slot->library != library) NotImplemented_nid_no_patch(__func__);
     return FT_Render_Glyph_nid_postfix(slot, renderMode);
 }
 
@@ -354,10 +397,12 @@ void APS5_VABI ft_synthesize_vertical_metrics_nid_postfix(FreeType::GuestGlyphMe
 
 void* APS5_VABI ft_service_list_lookup_nid_postfix(const GuestServiceDesc* descriptors, const char* service_id) {
     if (descriptors && service_id) {
-        for (; descriptors->serv_id; ++descriptors) {
-            if (std::strcmp(descriptors->serv_id, service_id) == 0) {
-                return descriptors->serv_data;
-            }
+        const std::string wanted = ReadGuestString(service_id, __func__);
+        GuestServiceDesc descriptor{};
+        for (auto address = reinterpret_cast<std::uintptr_t>(descriptors);; address += sizeof(descriptor)) {
+            CopyIn(&descriptor, address, sizeof(descriptor), __func__);
+            if (!descriptor.serv_id) break;
+            if (GuestStringEquals(descriptor.serv_id, wanted, __func__)) return descriptor.serv_data;
         }
     }
     return nullptr;

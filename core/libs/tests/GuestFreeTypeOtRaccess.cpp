@@ -112,6 +112,17 @@ void HeaderAndOffsets(std::size_t prefix, bool zeroCopy) {
     Require(FT_Raccess_Get_HeaderInfo_nid_postfix(&session.library, &session.stream, offset, &mapOffset, &rdataPos) == 0, "a resource fork header is accepted");
     Require(rdataPos == offset + 0x100 && mapOffset == offset + 0x140 + 28, "header info adds the fork offset to the data and type list positions");
     Require(session.stream.pos == static_cast<std::uint64_t>(mapOffset), "header info leaves the stream at the type list");
+    for (const bool unmappedMap : {false, true}) {
+        std::int64_t kept = -5;
+        auto* const unmapped = reinterpret_cast<std::int64_t*>(0x10);
+        bool threw = false;
+        try {
+            FT_Raccess_Get_HeaderInfo_nid_postfix(&session.library, &session.stream, offset, unmappedMap ? unmapped : &kept, unmappedMap ? &kept : unmapped);
+        } catch (...) {
+            threw = true;
+        }
+        Require(threw && kept == (unmappedMap ? offset + 0x100 : -5), "header info rejects an unmapped output");
+    }
 
     std::int64_t* offsets = nullptr;
     std::int64_t count = 0;
